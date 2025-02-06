@@ -24,6 +24,10 @@ BAUD              EQU 115200 ; Baud rate of UART in bps
 TIMER1_RELOAD     EQU (0x100-(CLK/(16*BAUD)))
 TIMER0_RELOAD_1MS EQU (0x10000-(CLK/1000))
 
+
+;shift button 
+S_BUTTON    equ P1.6
+
 ORG 0x0000
 	ljmp main
 
@@ -34,6 +38,9 @@ temp:      db 'To=   C  Tj=  C ', 0
 parameters:db 's   ,   r   ,   ', 0
 on:        db 'Oven on ', 0
 off:       db 'Oven off', 0
+
+
+
 
 cseg
 ; These 'equ' must match the hardware wiring
@@ -67,6 +74,8 @@ PB5: dbit 1
 PB6: dbit 1
 PB7: dbit 1
 
+process_start: dbit 1
+
 CSEG
 Init_All:
 	; Configure all the pins for biderectional I/O
@@ -85,6 +94,16 @@ Init_All:
 	orl	TMOD, #0x20 ; Timer 1 Mode 2
 	mov	TH1, #TIMER1_RELOAD ; TH1=TIMER1_RELOAD;
 	setb TR1
+	  
+
+	
+	;initialize temperatures/times for now 
+	mov s_time, #0x05
+	mov s_temp, #0x05
+	mov r_time, #0x05
+	mov r_temp, #0x05
+	
+
 	
 	; Using timer 0 for delay functions.  Initialize here:
 	clr	TR0 ; Stop timer 0
@@ -136,6 +155,8 @@ ADC_to_PB:
 	setb PB2
 	setb PB1
 	setb PB0
+	
+	setb S_BUTTON ; initilize shift button
 	
 	; Check PB7
 ADC_to_PB_L7:
@@ -254,19 +275,201 @@ main:
 	lcall Init_All
     lcall LCD_4BIT
     
-    ; initial messages in LCD
+    ; initialize oven_on_flag
+    clr process_start 
+	
+	; display logic
 	Set_Cursor(1, 1)
-    Send_Constant_String(#Title)
-	Set_Cursor(2, 1)
-    Send_Constant_String(#blank)
+    Send_Constant_String(#temp)
+    
+    Set_Cursor(2, 1)
+    Send_Constant_String(#parameters)
+    
+    Set_Cursor(1,2)
+
 	
 Forever:
 	lcall ADC_to_PB
-	lcall Display_PushButtons_ADC
+	;lcall Display_PushButtons_ADC
+	
+	; Display variables 
+	Set_Cursor(2, 2)
+	Display_BCD(s_time) 
+	Set_Cursor(2, 6)
+	Display_BCD(s_temp) 
+	Set_Cursor(2, 10)
+	Display_BCD(r_time) 
+	Set_Cursor(2, 14)
+	Display_BCD(r_temp) 
 	
 	; Wait 50 ms between readings
 	mov R2, #50
 	lcall waitms
+
+	; check if oven on/off button pressed
+	jnb PB3, oven_button_check 
+	
+process_start_check:
+	; check process flag, if passes, keep checking for button presses
+	jb process_start,  process_continue
+	
+	jnb PB7, check_S_button_7
+	jnb PB6, check_S_button_6
+	jnb PB5, check_S_button_5_temp
+	jnb PB4, check_S_button_4_temp
+
+process_continue:
+
+	Set_Cursor(1,1)
+	Send_Constant_String(#on)
+	ljmp Forever
+	
+check_S_button_4_temp:
+	ljmp check_S_button_4
+
+check_S_button_5_temp:
+	ljmp check_S_button_5
+
+oven_button_check:
+	Wait_Milli_Seconds(#75)
+	jb PB3, process_start_check  ; if not still pressed then skip 
+	jb PB3, $
+	
+	cpl process_start
+	
+	sjmp process_start_check
+	
+
+;PB7 CHECK
+check_S_button_7:
+
+	
+	jnb S_BUTTON, change_timeT_dec_7
+
+	;Debounce delay 
+	Wait_Milli_Seconds(#75)
+	jb PB7, timeT_done_7 ; if not still pressed then skip 
+	jb PB7, $
+
+	mov a, s_time
+	add a, #1
+	da a
+	mov s_time, a
+	
+timeT_done_7:
+	ljmp Forever
+
+change_timeT_dec_7:
+	jb PB7, timeT_done_7
+	;Debounce delay 
+	Wait_Milli_Seconds(#75)
+	jb PB7, timeT_done_7 ; if not still pressed then skip 
+	jb PB7, $
+	
+	mov a, s_time
+	add a, #0x99
+	da a 
+	mov s_time, a
+	
+	ljmp Forever
+
+
+;PB6 CHECK
+check_S_button_6:
+
+	
+	jnb S_BUTTON, change_timeT_dec_6
+
+	;Debounce delay 
+	Wait_Milli_Seconds(#75)
+	jb PB6, timeT_done_6 ; if not still pressed then skip 
+	jb PB6, $
+
+	mov a, s_temp
+	add a, #1
+	da a
+	mov s_temp, a
+	
+timeT_done_6:
+	ljmp Forever
+
+change_timeT_dec_6:
+	jb PB6, timeT_done_6
+	;Debounce delay 
+	Wait_Milli_Seconds(#75)
+	jb PB6, timeT_done_6 ; if not still pressed then skip 
+	jb PB6, $
+	
+	mov a, s_temp
+	add a, #0x99
+	da a 
+	mov s_temp, a
+	
+	ljmp Forever
+	
+;PB5 CHECK
+check_S_button_5:
+
+	
+	jnb S_BUTTON, change_timeT_dec_5
+
+	;Debounce delay 
+	Wait_Milli_Seconds(#75)
+	jb PB5, timeT_done_5 ; if not still pressed then skip 
+	jb PB5, $
+
+	mov a, r_time
+	add a, #1
+	da a
+	mov r_time, a
+	
+timeT_done_5:
+	ljmp Forever
+
+change_timeT_dec_5:
+	jb PB5, timeT_done_5
+	;Debounce delay 
+	Wait_Milli_Seconds(#75)
+	jb PB5, timeT_done_5 ; if not still pressed then skip 
+	jb PB5, $
+	
+	mov a, r_time
+	add a, #0x99
+	da a 
+	mov r_time, a
+	
+	ljmp Forever
+	
+;PB4 CHECK
+check_S_button_4:
+
+	
+	jnb S_BUTTON, change_timeT_dec_4
+
+	;Debounce delay 
+	Wait_Milli_Seconds(#75)
+	jb PB4, timeT_done_4 ; if not still pressed then skip 
+	jb PB4, $
+
+	mov a, r_temp
+	add a, #1
+	da a
+	mov r_temp, a
+	
+timeT_done_4:
+	ljmp Forever
+
+change_timeT_dec_4:
+	jb PB4, timeT_done_4
+	;Debounce delay 
+	Wait_Milli_Seconds(#75)
+	jb PB4, timeT_done_4 ; if not still pressed then skip 
+	jb PB4, $
+	
+	mov a, r_temp
+	add a, #0x99
+	da a 
+	mov r_temp, a
 	
 	ljmp Forever
 	
