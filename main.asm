@@ -20,14 +20,15 @@
 ; PWM5/IC7/SS/P1.5		-|10 11|-	P1.4/SDA/FB/PWM1
 ; ------------------------------------------------------------------------------
 
-; AIN0	P1.7	Push button
+; ADC channel mappings.
+;
 ; AIN1	P3.0	Ambient temperature
-
+; AIN4	P0.5	Push button
 
 ; Mappings for push buttons.
 ;
-; P1.5	Start/stop oven
-; P1.6	SHIFT modifier
+; P1.5	SHIFT modifier
+; P1.6	Start/stop oven
 ;
 ; PB0	Unassigned
 ; PB1	Unassigned
@@ -235,6 +236,14 @@ Switch_to_AIN1:
 	MOV AINDIDS, #0b0000_0010
 	RET
 
+Switch_to_AIN4:
+	; Select ADC channel 4.
+	ANL ADCCON0, #0b1111_0000
+	ORL ADCCON0, #0b0000_0100
+	; Enable P0.5 as analog and everything else as digital.
+	MOV AINDIDS, #0b0001_0000
+	RET
+
 ; Check push buttons.
 
 CHECK_PUSH_BUTTON MAC PB, NEXT, HEX
@@ -248,7 +257,7 @@ Check_%0:
 ENDMAC
 
 ADC_to_PB:
-	LCALL Switch_to_AIN0
+	LCALL Switch_to_AIN4
 
 	; Wait for ADC to finish A/D conversion.
 	CLR ADCF
