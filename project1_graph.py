@@ -1,98 +1,164 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-import sys, time, math
+import sys, serial
+from matplotlib.collections import LineCollection
 
-import serial
+
+xsize = 200  # Set a fixed range for the x-axis
+
+#temp values that need to be reached for diff states
+state1_val = 23 #state 1 - ramp-to-soak -....
+state2_val = 25 #state 2 - soak - ....
+state3_val = 27 #state 3 - ramp-to-peak - ....
+state4_val = 29 #state 4 - reflow - ....
+state5_val = 31 #state 5 - cool - ....
 
 
-# configure the serial port
+# Configure the serial port
 ser = serial.Serial(
-port='COM5',
-baudrate=115200,
-parity=serial.PARITY_NONE,
-stopbits=serial.STOPBITS_TWO,
-bytesize=serial.EIGHTBITS
+    port='COM8',
+    baudrate=115200,
+    parity=serial.PARITY_NONE,
+    stopbits=serial.STOPBITS_TWO,
+    bytesize=serial.EIGHTBITS
 )
 ser.isOpen()
 
-arr = []
-xdata, ydata = [], []
-xsize=100
-max_val = float('-inf')
-min_val = float('inf')
-
-
+# Data generator
 def data_gen():
-    t = 0
+    t = data_gen.t
     while True:
-        strin = ser.readline()
-        decoded_string = strin.decode('utf-8') # Remove newline characters
-        print("Received:", decoded_string)
-        val = float(decoded_string)  # Parse to float
-        
-        arr.append(val)  # Store the received value
-        yield t, val
         t += 1
+        ser_read = ser.readline()
+        ser_decode = ser_read.decode('utf-8').strip()
+        val = float(ser_decode)
+        yield t, val
 
-# Update function for the animation
+# Function to determine segment colors
+def get_color(value):
+
+    #important to write in decreasing order of temp for each state -> checks largest temp first then goes down
+    #adjust to temp of states as necessary
+    if value >= state5_val:
+        return 'r'  # Red 
+    elif value >= state4_val:
+        return 'm'  # magenta
+    elif value >= state3_val:
+        return 'g'  # green
+    elif value >= state2_val:
+        return 'b'  # blue
+    elif value >= state1_val:
+        return 'c'  # cyan
+    else:
+        return 'k'  # Black for any temp that isnt a state 
+
+# Function to update the graph
 def run(data):
-    global max_val
-    global min_val
-    t,y = data
-    if t>-1:
+    t, y = data
+    if t > -1:
         xdata.append(t)
         ydata.append(y)
 
-        if y > max_val:
-            max_val = y
-            max_text.set_text(f"Max: {max_val:.2f}")  # Update text
-            max_text.set_position((t, y))  # Move the text to the new max point
+        # Update text only for the current state
+        if y >= state5_val:
+            state5_text.set_text(f"State 5: {y:.2f}")
+            state5_text.set_position((t - 5, y + 2))
+            state1_text.set_text("")
+            state2_text.set_text("")
+            state3_text.set_text("")
+            state4_text.set_text("")   
+
+        elif y >= state4_val:
+            state4_text.set_text(f"State 4: {y:.2f}")
+            state4_text.set_position((t - 5, y + 2))
+            state1_text.set_text("")
+            state2_text.set_text("")
+            state3_text.set_text("") 
+            state5_text.set_text("")  
+        elif y >= state3_val:
+            state3_text.set_text(f"State 3: {y:.2f}")
+            state3_text.set_position((t - 5, y + 2))
+            state1_text.set_text("")
+            state2_text.set_text("")
+            state4_text.set_text("")  
+            state5_text.set_text("")  
+        elif y >= state2_val:
+            state2_text.set_text(f"State 2: {y:.2f}")
+            state2_text.set_position((t - 5, y + 2))
+            state1_text.set_text("")
+            state3_text.set_text("")
+            state4_text.set_text("")  
+            state5_text.set_text("")  
+        elif y >= state1_val:
+            state1_text.set_text(f"State 1: {y:.2f}")
+            state1_text.set_position((t - 5, y + 2))
+            state2_text.set_text("")
+            state3_text.set_text("")
+            state4_text.set_text("")  
+            state5_text.set_text("")  
+        else:
+            # Clear all state texts if below State 1
+            state1_text.set_text("")
+            state2_text.set_text("")
+            state3_text.set_text("")
+            state4_text.set_text("")  
+            state5_text.set_text("")  
+
+
+        # Create segments with colors
+        points = np.array([xdata, ydata]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        colors = [get_color(val) for val in ydata[:-1]]
+
+        # Clear and update the line collection
+        ax.clear()
+        ax.set_ylim(0, 300)
+        ax.set_xlim(0, xsize)  # Fixed starting range
+        ax.grid()
+
+        # Add updated plot elements
+        lc = LineCollection(segments, colors=colors, linewidth=2)
+        ax.add_collection(lc)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Temperature (°C)")
+        ax.set_title("Temperature in Oven")
+
+        # Re-add the active text objects
+        ax.add_artist(state1_text)
+        ax.add_artist(state2_text)
+        ax.add_artist(state3_text)
+        ax.add_artist(state4_text)
+        ax.add_artist(state5_text)
         
-        if y < min_val:
-            min_val = y
-            min_text.set_text(f"Min: {min_val:.2f}")  # Update text
-            min_text.set_position((t, y))  # Move the text to the new min point
 
+    return ax,
 
-        if t>xsize: # Scroll to the left.
-            ax.set_xlim(t-xsize, t)
-        line.set_data(xdata, ydata)
-
-    return line, max_text, min_text
-
+# Event handler for closing the figure
 def on_close_figure(event):
     sys.exit(0)
 
-
-
-
-   
-
-
-# Set up the plot
+# Initialize variables
 data_gen.t = -1
 fig = plt.figure()
 fig.canvas.mpl_connect('close_event', on_close_figure)
 ax = fig.add_subplot(111)
-line, = ax.plot([], [], lw=2, color='red')
-ax.set_ylim(0, 280)  # Adjust Y-axis range as needed
-ax.set_xlim(0, xsize)  # Initial X-axis range
+ax.set_ylim(0, 300)
+ax.set_xlim(0, xsize)  # Fixed starting range
 ax.grid()
+xdata, ydata = [], []
 
-ax.set_title("Temperature vs. Time")  # Title of the plot
-ax.set_xlabel("Time (t/500 ms)")           # Label for the X-axis
-ax.set_ylabel("Temperature (\N{DEGREE SIGN}C)")              # Label for the Y-axis
-
-
-
-max_text = ax.text(0, 0, "", fontsize=10, color="red")
-
-min_text = ax.text(0, 0, "", fontsize=10, color="blue")
+# Create text objects at a fixed position initially
+state1_text = ax.text(5, 80, "", fontsize=10, color="red")
+state2_text = ax.text(5, 70, "", fontsize=10, color="magenta", ha="left")
+state3_text = ax.text(5, 60, "", fontsize=10, color="green", ha="left")
+state4_text = ax.text(5, 80, "", fontsize=10, color="blue")
+state5_text = ax.text(5, 70, "", fontsize=10, color="cyan", ha="left")
 
 
-# Animation setup
+# Animation
 ani = animation.FuncAnimation(fig, run, data_gen, blit=False, interval=100, repeat=False)
-
-# Display the plot
 plt.show()
+
+
+
