@@ -156,6 +156,8 @@ str_reflow:
 	DB 'RFLW', 0
 str_cooling:
 	DB 'COOLING DOWN', 0
+str_abort:
+	DB 'Aborting...', 0
 str_emergency_1:
 	DB 'EMERGENCY ABORT', 0
 str_emergency_2:
@@ -300,7 +302,7 @@ EMERGENCY:
 
 	; Check if oven on/off button is pressed.
 	JB OVEN_BUTTON, EMERGENCY_L1
-	DELAY(#100)
+	DELAY(#75)
 	JB OVEN_BUTTON, EMERGENCY_L1
 	JNB OVEN_BUTTON, $
 
@@ -327,10 +329,30 @@ OVEN_ON:
 	DELAY(#250)
 	DELAY(#250)
 
+	; Check if oven on/off button is pressed.
+	JB OVEN_BUTTON, OVEN_ON_L1
+	DELAY(#75)
+	JB OVEN_BUTTON, OVEN_ON_L1
+	JNB OVEN_BUTTON, $
+
+	; Abort reflow process.
+	WRITECOMMAND(#0x01)
+	DELAY(#5)
+	SEND_CONSTANT_STRING(#str_abort)
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	LJMP RESET_TO_IDLE
+
+OVEN_ON_L1:
 	LJMP PREHEAT
 
+OVEN_ON_INTERIM:
+	LJMP OVEN_ON
+
 IDLE:
-	CJNE A, #STATE_IDLE, OVEN_ON
+	CJNE A, #STATE_IDLE, OVEN_ON_INTERIM
 	MOV pwm, #100
 
 	; Convert ADC signal to push button bitfield.
@@ -360,7 +382,7 @@ IDLE:
 
 	; Check if oven on/off button is pressed.
 	JB OVEN_BUTTON, IDLE_L1
-	DELAY(#100)
+	DELAY(#75)
 	JB OVEN_BUTTON, IDLE_L1
 	JNB OVEN_BUTTON, $
 
