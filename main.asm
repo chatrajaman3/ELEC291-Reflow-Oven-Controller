@@ -79,14 +79,13 @@ LCD_D6 EQU P0.2
 LCD_D7 EQU P0.3
 
 ; State machine states representations.
-STATE_INIT EQU 0
+STATE_EMERGENCY EQU 0
 STATE_IDLE EQU 1
 STATE_PREHEAT EQU 2
 STATE_SOAK EQU 3
 STATE_RAMP EQU 4
 STATE_REFLOW EQU 5
 STATE_COOLING EQU 6
-STATE_EMERGENCY EQU 7
 
 $NOLIST
 $include(math32.inc)
@@ -157,6 +156,10 @@ str_reflow:
 	DB 'RFLW', 0
 str_cooling:
 	DB 'COOLING DOWN', 0
+str_emergency_1:
+	DB 'EMERGENCY ABORT', 0
+str_emergency_2:
+	DB 'CHECK THERMOWIRE', 0
 
 ; Interrupt service routines.
 
@@ -200,8 +203,6 @@ TIMER2_ISR_L1:
 
 START:
 	MOV SP, #0x7F
-
-	; DELAY(#5)
 
 	; Configure all the pins for biderectional I/O.
 	MOV P3M1, #0x00
@@ -291,10 +292,31 @@ MAIN:
 
 ; Begin state machine logic and handling.
 
+EMERGENCY:
+	SET_CURSOR(1, 1)
+	SEND_CONSTANT_STRING(#str_emergency_1)
+	SET_CURSOR(2, 1)
+	SEND_CONSTANT_STRING(#str_emergency_2)
+
+	; Check if oven on/off button is pressed.
+	JB OVEN_BUTTON, EMERGENCY_L1
+	DELAY(#100)
+	JB OVEN_BUTTON, EMERGENCY_L1
+	JNB OVEN_BUTTON, $
+
+	LJMP RESET_TO_IDLE
+
+EMERGENCY_L1:
+	LJMP MAIN
+
 OVEN_ON:
 	; This delay helps mitigate an undesired flash at
 	; the beginning of the state transition.
 	DELAY(#5)
+
+	CJNE A, #STATE_EMERGENCY, $+6
+	LJMP EMERGENCY
+
 	SET_CURSOR(1, 1)
 	SEND_CONSTANT_STRING(#str_stats)
 	LCALL READ_TEMP
@@ -304,6 +326,7 @@ OVEN_ON:
 	DISPLAY_BCD(time+0)
 	DELAY(#250)
 	DELAY(#250)
+
 	LJMP PREHEAT
 
 IDLE:
@@ -367,14 +390,31 @@ PREHEAT:
 	DISPLAY_BCD(soak_temp)
 	DISPLAY_CHAR(#'C')
 
+	; Check if oven temperature reaches 50 deg C within 60 s.
+	MOV A, time+1
+	JNZ $+4
+	SJMP PREHEAT_L1
+	MOV A, temp_oven+1
+	CJNE A, #0x00, PREHEAT_L1
+	CLR C
+	MOV A, #0x50
+	SUBB A, temp_oven+0
+	JC PREHEAT_L1
+ABORTING:
+	WRITECOMMAND(#0x01)
+	MOV FSM1_state, #STATE_EMERGENCY
+	MOV pwm, #100
+	LJMP MAIN
+
+PREHEAT_L1:
 	; Check if oven temperature is more than threshold.
 	CLR C
 	MOV A, temp_oven+1
 	SUBB A, #0x01
-	JC PREHEAT_L1
+	JC PREHEAT_L2
 	MOV A, temp_oven+0
 	SUBB A, soak_temp
-	JC PREHEAT_L1
+	JC PREHEAT_L2
 
 SOAK_TRANSITION:
 	WRITECOMMAND(#0x01)
@@ -383,7 +423,7 @@ SOAK_TRANSITION:
 	MOV time+1, #0x00
 	MOV pwm, #80
 
-PREHEAT_L1:
+PREHEAT_L2:
 	LJMP MAIN
 
 RAMPUP_INTERIM:
@@ -516,7 +556,7 @@ COOLING:
 	SUBB A, temp_oven+0
 	JC COOLING_L1
 
-BACK_TO_IDLE:
+RESET_TO_IDLE:
 	WRITECOMMAND(#0x01)
 	MOV FSM1_state, #STATE_IDLE
 	MOV time+0, #0x00
