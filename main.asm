@@ -94,6 +94,7 @@ $include(util.inc)
 $include(LCD.inc)
 $LIST
 
+; Bit-addressable memory space.
 DSEG at 0x20
 
 ; Bitfield for push button values.
@@ -200,6 +201,8 @@ TIMER2_ISR_L1:
 START:
 	MOV SP, #0x7F
 
+	; DELAY(#5)
+
 	; Configure all the pins for biderectional I/O.
 	MOV P3M1, #0x00
 	MOV P3M2, #0x00
@@ -220,9 +223,9 @@ START:
 	; CLK is the input for timer 1.
 	ORL CKCON, #0b0001_0000
 	; Bit SMOD=1, double baud rate.
-	ORL PCON, #0b0000_1000
+	ORL PCON, #0b1000_0000
 	MOV SCON, #0b0101_0010
-	ANL T3CON, #0b110_11111
+	ANL T3CON, #0b1101_1111
 	; Clear the configuration bits for timer 1.
 	ANL TMOD, #0b0000_1111
 	; Timer 1 Mode 2.
@@ -583,15 +586,12 @@ SWITCH_TO_AIN7:
 READ_TEMP:
 	; Read the 2.08V LM4040 voltage connected to AIN0 on pin 6.
 	LCALL SWITCH_TO_AIN0
-
 	LCALL READ_ADC
-	; Save result for later use.
 	MOV voltage_ref+0, R0
 	MOV voltage_ref+1, R1
 
-	; LM335.
+	; Read the LM335 ambient temperature.
 	LCALL SWITCH_TO_AIN1
-
 	LCALL READ_ADC
 	MOV temp_ambient+0, R0
 	MOV temp_ambient+1, R1
@@ -599,17 +599,15 @@ READ_TEMP:
 	; Convert to voltage.
 	MOV x+0, R0
 	MOV x+1, R1
-	; Pad other bits with zero.
 	MOV x+2, #0
 	MOV x+3, #0
-	; The MEASURED voltage reference: 4.0959V, with 4 decimal places.
+	; The measured voltage reference: 4.0959V, with 4 decimal places.
 	LOAD_Y(40959)
 	LCALL MUL32
 
 	; Retrieve the LM4040 ADC value.
 	MOV y+0, voltage_ref+0
 	MOV y+1, voltage_ref+1
-	; Pad other bits with zero
 	MOV y+2, #0
 	MOV y+3, #0
 	LCALL DIV32
@@ -640,7 +638,7 @@ READ_TEMP:
 	MOV x+1, R1
 	MOV x+2, #0
 	MOV x+3, #0
-	; The MEASURED voltage reference: 4.0959V, with 4 decimal places.
+	; The measured voltage reference: 4.0959V, with 4 decimal places.
 	LOAD_Y(40959)
 	LCALL MUL32
 
@@ -672,6 +670,20 @@ READ_TEMP:
 	SET_CURSOR(1, 1)
 	DISPLAY_LOWER_BCD(bcd+3)
 	DISPLAY_BCD(bcd+2)
+
+	; Send to PUTTY.
+	PUSH ACC
+	SEND_BCD(bcd+3)
+	SEND_BCD(bcd+2)
+	MOV A, #'.'
+	LCALL PUTCHAR
+	SEND_BCD(bcd+1)
+	SEND_BCD(bcd+0)
+	MOV A, #'\r'
+	LCALL PUTCHAR
+	MOV A, #'\n'
+	LCALL PUTCHAR
+	POP ACC
 
 	MOV temp_oven+0, bcd+2
 	MOV temp_oven+1, bcd+3
