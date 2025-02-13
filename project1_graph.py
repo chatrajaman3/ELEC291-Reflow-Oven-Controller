@@ -44,7 +44,7 @@ def send_email():
     msg = MIMEMultipart()
     msg["From"] = sender_email
     msg["To"] = receiver_email
-    msg["Subject"] = "🔥 Temperature Alert! Oven Over 217°C 🔥"
+    msg["Subject"] = "🔥 Temperature Alert! Oven Over 217°C! Reflow has occurred🔥"
 
     # Email body, adjust as necessary
     body = "Alert. Oven Temperature has reached 217°C. Cooling will begin soon and board is fully cooked. See the attached log file for more info on temperature readings."
@@ -87,6 +87,7 @@ open(log_file, "w").close()
 # Data generator
 def data_gen():
     global email_sent
+    #actual decoding of serial port and printing 
     t = data_gen.t
     while True:
         try:
@@ -149,6 +150,7 @@ def on_close_figure(event):
     sys.exit(0)
 
 # Initialize variables
+#everything below is for graph
 data_gen.t = -1
 fig, ax = plt.subplots()
 fig.canvas.mpl_connect('close_event', on_close_figure)
