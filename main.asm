@@ -17,25 +17,23 @@
 ;                                        GND -|7    14|- P1.1/PWM1/IC1/AIN7/CLO       [Analog OPAMP input]
 ; [Oven on/off] [SDA]/TXD_1/ICPDA/OCDDA/P1.6 -|8    13|- P1.2/PWM0/IC0                [Speaker output]
 ;                                        VDD -|9    12|- P1.3/SCL/[STADC]
-; [SHIFT button]            PWM5/IC7/SS/P1.5 -|10   11|- P1.4/SDA/FB/PWM1
+; [SHIFT button]            PWM5/IC7/SS/P1.5 -|10   11|- P1.4/SDA/FB/PWM1			  [PRESET button]
 ;                                              -------
 
 ; ADC channel mappings.
 ;
-; AIN0	P1.7	Reference voltage
 ; AIN1	P3.0	Ambient temperature
 ; AIN4	P0.5	Push button
-; AIN7	P1.1	Op-amp with thermocouple wire
 
 ; Mappings for push buttons.
 ;
 ; P1.5	SHIFT modifier
 ; P1.6	Start/stop oven
 ;
-; PB.0	Unassigned
-; PB.1	Unassigned
-; PB.2	Unassigned
-; PB.3	Unassigned
+; PB.0	PReset Reflow Time
+; PB.1	Preset Reflow Temperature
+; PB.2	Preset Soak Time
+; PB.3	Preset Soak Temperature
 ; PB.4	Reflow time
 ; PB.5	Reflow temperature
 ; PB.6	Soak time
@@ -69,6 +67,8 @@ SPKR_OUT EQU P1.2
 OVEN_BUTTON EQU P1.6
 ; Shift button.
 S_BUTTON EQU P1.5
+; Preset button.
+P_BUTTON EQU P0.4
 
 ; LCD I/O pins.
 LCD_E EQU P1.4
@@ -79,21 +79,21 @@ LCD_D6 EQU P0.2
 LCD_D7 EQU P0.3
 
 ; State machine states representations.
-STATE_EMERGENCY EQU 0
+STATE_INIT EQU 0
 STATE_IDLE EQU 1
 STATE_PREHEAT EQU 2
 STATE_SOAK EQU 3
 STATE_RAMP EQU 4
 STATE_REFLOW EQU 5
 STATE_COOLING EQU 6
+STATE_EMERGENCY EQU 7
 
 $NOLIST
-$include(math32.inc)
 $include(util.inc)
 $include(LCD.inc)
+$include(math32.inc)
 $LIST
 
-; Bit-addressable memory space.
 DSEG at 0x20
 
 ; Bitfield for push button values.
@@ -101,33 +101,49 @@ PB: DS 1
 
 DSEG at 0x30
 
-counter: DS 1
-
 ; State machine related variables. Refer to defined macros.
+
 time: DS 2
+counter_ms: DS 2
 FSM1_state: DS 1
 
 ; Variables for 32-bit integer arithmetic.
+
 x: DS 4
 y: DS 4
 z: DS 4
 
 ; User-controlled variables.
+
 soak_temp: DS 1
 soak_time: DS 1
 reflow_temp: DS 1
 reflow_time: DS 1
 
 ; Temperature readings.
-voltage_ref: ds 2
-temp_ambient: ds 2
+
+; Reference voltage.
+VAL_LM4040: ds 2
+; Ambient temperature
+VAL_LM335: ds 2
 
 ; Oven controller variables.
+
 pwm: DS 1
 temp_oven: DS 2
 
 ; BCD numbers for LCD.
+
 bcd: DS 5
+
+counter: DS 1
+
+; Save Presets
+
+preset_soak_temp: DS 1
+preset_soak_time: DS 1
+preset_reflow_temp: DS 1
+preset_reflow_time: DS 1
 
 BSEG
 
@@ -138,7 +154,8 @@ process_start: DBIT 1
 CSEG
 
 ; LCD display strings.
-str_stats:
+
+temp:
 	DB '   C/  C    :  s', 0
 str_soak_params:
 	DB 'SOAK       C   s', 0
@@ -156,14 +173,32 @@ str_reflow:
 	DB 'RFLW', 0
 str_cooling:
 	DB 'COOLING DOWN', 0
-str_abort:
-	DB 'Aborting...', 0
-str_emergency_1:
-	DB 'EMERGENCY ABORT', 0
-str_emergency_2:
-	DB 'CHECK THERMOWIRE', 0
+str_space:
+	DB ' ', 0
 
 ; Interrupt service routines.
+
+LCD_4BIT:
+    clr LCD_E   ; Resting state of LCD's enable is zero
+    ; clr LCD_RW  ; Not used, pin tied to GND
+
+    ; After power on, wait for the LCD start up time before initializing
+	Delay(#40)
+
+    ; First make sure the LCD is in 8-bit mode and then change to 4-bit mode
+	WriteCommand(#0x33)
+	WriteCommand(#0x33)
+	WriteCommand(#0x32)
+
+    ; Configure the LCD
+    WriteCommand(#0x28)
+    WriteCommand(#0x0C)
+    WriteCommand(#0x01) ; clears command screen
+
+    ;Wait for clear screen command to finish. Usually takes 1.52ms.
+	Delay(#2)
+
+    RET
 
 TIMER2_ISR:
 	PUSH ACC
@@ -204,7 +239,7 @@ TIMER2_ISR_L1:
 ; Program entry point.
 
 START:
-	MOV SP, #0x7F
+	MOV SP, #0x7FH
 
 	; Configure all the pins for biderectional I/O.
 	MOV P3M1, #0x00
@@ -217,24 +252,31 @@ START:
 	; Enable global interrupts.
 	SETB EA
 
+	; CLK is the input for timer 1.
+	ORL CKCON, #0b0001_0000
+	; Bit SMOD=1, double baud rate.
+	ORL PCON, #0b0000_1000
+	MOV SCON, #0b0101_0010
+	ANL T3CON, #0b110_11111
+	; Clear the configuration bits for timer 1.
+	ANL TMOD, #0b0000_1111
+	; Timer 1 Mode 2.
+	ORL TMOD, #0b0010_0000
+	; TH1 = TIMER1_RELOAD.
+	MOV TH1, #TIMER1_RELOAD
+	SETB TR1
+
+	; Initialise temperatures/times.
+	MOV soak_temp, #0x50
+	MOV soak_time, #0x75
+	MOV reflow_temp, #0x25
+	MOV reflow_time, #0x60
+
 	; Using timer 0 for delay functions.
 	CLR TR0
 	ORL CKCON, #0b0000_1000
 	ANL TMOD, #0b1111_0000
 	ORL TMOD, #0b0000_0001
-
-	; CLK is the input for timer 1.
-	ORL CKCON, #0b0001_0000
-	; Bit SMOD=1, double baud rate.
-	ORL PCON, #0b1000_0000
-	MOV SCON, #0b0101_0010
-	ANL T3CON, #0b1101_1111
-	; Clear the configuration bits for timer 1.
-	ANL TMOD, #0b0000_1111
-	; Timer 1 Mode 2.
-	ORL TMOD, #0b0010_0000
-	MOV TH1, #TIMER1_RELOAD
-	SETB TR1
 
 	; Timer 2 initialisation.
 	MOV T2CON, #0b0000_0000
@@ -268,13 +310,18 @@ START:
 	; Enable ADC.
 	ORL ADCCON1, #0b0000_0001
 
-	LCALL LCD_INIT
-
-	; Initialise temperatures/times.
-	MOV soak_temp, #0x50
-	MOV soak_time, #0x75
-	MOV reflow_temp, #0x25
-	MOV reflow_time, #0x60
+	LCALL LCD_4BIT
+	WriteCommand(#0x40) ; Entry mode set
+	
+	; Arrow
+	WriteData(#00000B)
+	WriteData(#01000B)
+	WriteData(#01100B)
+	WriteData(#00110B)
+	WriteData(#00110B)
+	WriteData(#01100B)
+	WriteData(#01000B)
+	WriteData(#00000B)
 
 	; Initialise state machine.
 	MOV FSM1_state, #STATE_IDLE
@@ -286,41 +333,29 @@ START:
 	SET_CURSOR(2, 1)
 	SEND_CONSTANT_STRING(#str_reflow_params)
 
-; Main program loop.
+	; Create 1 custom character for the LCD
+	mov A, #0x08 ; maybe 0x08
+
+	SETB P_BUTTON
+	
+	MOV preset_soak_temp, #0x69
+	MOV preset_reflow_temp, #0x69
+	MOV preset_soak_time, #0x69
+	MOV preset_reflow_time, #0x69
 
 MAIN:
+
 	MOV A, FSM1_state
 	LJMP IDLE
 
 ; Begin state machine logic and handling.
 
-EMERGENCY:
-	SET_CURSOR(1, 1)
-	SEND_CONSTANT_STRING(#str_emergency_1)
-	SET_CURSOR(2, 1)
-	SEND_CONSTANT_STRING(#str_emergency_2)
-
-	; Check if oven on/off button is pressed.
-	JB OVEN_BUTTON, EMERGENCY_L1
-	DELAY(#75)
-	JB OVEN_BUTTON, EMERGENCY_L1
-	JNB OVEN_BUTTON, $
-
-	LJMP RESET_TO_IDLE
-
-EMERGENCY_L1:
-	LJMP MAIN
-
 OVEN_ON:
 	; This delay helps mitigate an undesired flash at
 	; the beginning of the state transition.
 	DELAY(#5)
-
-	CJNE A, #STATE_EMERGENCY, $+6
-	LJMP EMERGENCY
-
 	SET_CURSOR(1, 1)
-	SEND_CONSTANT_STRING(#str_stats)
+	SEND_CONSTANT_STRING(#temp)
 	LCALL READ_TEMP
 	SET_CURSOR(1, 12)
 	DISPLAY_LOWER_BCD(time+1)
@@ -328,31 +363,10 @@ OVEN_ON:
 	DISPLAY_BCD(time+0)
 	DELAY(#250)
 	DELAY(#250)
-
-	; Check if oven on/off button is pressed.
-	JB OVEN_BUTTON, OVEN_ON_L1
-	DELAY(#75)
-	JB OVEN_BUTTON, OVEN_ON_L1
-	JNB OVEN_BUTTON, $
-
-	; Abort reflow process.
-	WRITECOMMAND(#0x01)
-	DELAY(#5)
-	SEND_CONSTANT_STRING(#str_abort)
-	DELAY(#250)
-	DELAY(#250)
-	DELAY(#250)
-	DELAY(#250)
-	LJMP RESET_TO_IDLE
-
-OVEN_ON_L1:
 	LJMP PREHEAT
 
-OVEN_ON_INTERIM:
-	LJMP OVEN_ON
-
 IDLE:
-	CJNE A, #STATE_IDLE, OVEN_ON_INTERIM
+	CJNE A, #STATE_IDLE, OVEN_ON
 	MOV pwm, #100
 
 	; Convert ADC signal to push button bitfield.
@@ -368,6 +382,41 @@ IDLE:
 	JB PB.7, $+6
 	LCALL CHANGE_SOAK_TEMP
 
+	; Check preset buttons load if pressed, if shift is pressed then save the value to the preset.
+
+	; If preset button is pressed, jump
+	JNB P_BUTTON, SAVE_PRESET
+	LCALL ADC_TO_PB
+
+	; If P button is not pressed, check if the load buttons are pressed
+	JB PB.3, PRESET_NEXT1
+	LCALL LOAD_PRESET_1
+PRESET_NEXT1:
+	JB PB.2, PRESET_NEXT2
+	LCALL LOAD_PRESET_2
+PRESET_NEXT2:	
+	JB PB.1, PRESET_NEXT3
+	LCALL LOAD_PRESET_3
+PRESET_NEXT3:
+	JB PB.0, PRESET_NEXT4
+	LCALL LOAD_PRESET_4
+PRESET_NEXT4:
+
+	
+	LJMP DISPLAY_VARIABLES
+
+SAVE_PRESET:
+
+	JB PB.3, $+6
+	LCALL SAVE_SOAK_TEMP
+	JB PB.2, $+6
+	LCALL SAVE_SOAK_TIME
+	JB PB.1, $+6
+	LCALL SAVE_REFLOW_TEMP
+	JB PB.0, $+6
+	LCALL SAVE_REFLOW_TIME
+
+DISPLAY_VARIABLES:
 	; Display variables.
 	SET_CURSOR(1, 9)
 	DISPLAY_CHAR(#'1')
@@ -382,7 +431,7 @@ IDLE:
 
 	; Check if oven on/off button is pressed.
 	JB OVEN_BUTTON, IDLE_L1
-	DELAY(#75)
+	DELAY(#100)
 	JB OVEN_BUTTON, IDLE_L1
 	JNB OVEN_BUTTON, $
 
@@ -412,31 +461,14 @@ PREHEAT:
 	DISPLAY_BCD(soak_temp)
 	DISPLAY_CHAR(#'C')
 
-	; Check if oven temperature reaches 50 deg C within 60 s.
-	MOV A, time+1
-	JNZ $+4
-	SJMP PREHEAT_L1
-	MOV A, temp_oven+1
-	CJNE A, #0x00, PREHEAT_L1
-	CLR C
-	MOV A, #0x50
-	SUBB A, temp_oven+0
-	JC PREHEAT_L1
-ABORTING:
-	WRITECOMMAND(#0x01)
-	MOV FSM1_state, #STATE_EMERGENCY
-	MOV pwm, #100
-	LJMP MAIN
-
-PREHEAT_L1:
 	; Check if oven temperature is more than threshold.
 	CLR C
 	MOV A, temp_oven+1
 	SUBB A, #0x01
-	JC PREHEAT_L2
+	JC PREHEAT_L1
 	MOV A, temp_oven+0
 	SUBB A, soak_temp
-	JC PREHEAT_L2
+	JC PREHEAT_L1
 
 SOAK_TRANSITION:
 	WRITECOMMAND(#0x01)
@@ -445,7 +477,7 @@ SOAK_TRANSITION:
 	MOV time+1, #0x00
 	MOV pwm, #80
 
-PREHEAT_L2:
+PREHEAT_L1:
 	LJMP MAIN
 
 RAMPUP_INTERIM:
@@ -578,7 +610,7 @@ COOLING:
 	SUBB A, temp_oven+0
 	JC COOLING_L1
 
-RESET_TO_IDLE:
+BACK_TO_IDLE:
 	WRITECOMMAND(#0x01)
 	MOV FSM1_state, #STATE_IDLE
 	MOV time+0, #0x00
@@ -619,26 +651,26 @@ READ_ADC:
 
 ; ADC channel switching subroutines.
 
-; Read LM4040 reference voltage.
 SWITCH_TO_AIN0:
+	; Select ADC channel 0.
 	ANL ADCCON0, #0b1111_0000
 	ORL ADCCON0, #0b0000_0000
 	RET
 
-; Read LM335 ambient temperature.
 SWITCH_TO_AIN1:
+	; Select ADC channel 1.
 	ANL ADCCON0, #0b1111_0000
 	ORL ADCCON0, #0b0000_0001
 	RET
 
-; Read push buttons.
 SWITCH_TO_AIN4:
+	; Select ADC channel 4.
 	ANL ADCCON0, #0b1111_0000
 	ORL ADCCON0, #0b0000_0100
 	RET
 
-; Read amplified thermocouple wire.
 SWITCH_TO_AIN7:
+	; Select ADC channel 7.
 	ANL ADCCON0, #0b1111_0000
 	ORL ADCCON0, #0b0000_0111
 	RET
@@ -648,28 +680,33 @@ SWITCH_TO_AIN7:
 READ_TEMP:
 	; Read the 2.08V LM4040 voltage connected to AIN0 on pin 6.
 	LCALL SWITCH_TO_AIN0
-	LCALL READ_ADC
-	MOV voltage_ref+0, R0
-	MOV voltage_ref+1, R1
 
-	; Read the LM335 ambient temperature.
-	LCALL SWITCH_TO_AIN1
 	LCALL READ_ADC
-	MOV temp_ambient+0, R0
-	MOV temp_ambient+1, R1
+	; Save result for later use.
+	MOV VAL_LM4040+0, R0
+	MOV VAL_LM4040+1, R1
+
+	; LM335.
+	LCALL SWITCH_TO_AIN1
+
+	LCALL READ_ADC
+	MOV VAL_LM335+0, R0
+	MOV VAL_LM335+1, R1
 
 	; Convert to voltage.
 	MOV x+0, R0
 	MOV x+1, R1
+	; Pad other bits with zero.
 	MOV x+2, #0
 	MOV x+3, #0
-	; The measured voltage reference: 4.0959V, with 4 decimal places.
+	; The MEASURED voltage reference: 4.0959V, with 4 decimal places.
 	LOAD_Y(40959)
 	LCALL MUL32
 
 	; Retrieve the LM4040 ADC value.
-	MOV y+0, voltage_ref+0
-	MOV y+1, voltage_ref+1
+	MOV y+0, VAL_LM4040+0
+	MOV y+1, VAL_LM4040+1
+	; Pad other bits with zero
 	MOV y+2, #0
 	MOV y+3, #0
 	LCALL DIV32
@@ -700,13 +737,13 @@ READ_TEMP:
 	MOV x+1, R1
 	MOV x+2, #0
 	MOV x+3, #0
-	; The measured voltage reference: 4.0959V, with 4 decimal places.
+	; The MEASURED voltage reference: 4.0959V, with 4 decimal places.
 	LOAD_Y(40959)
 	LCALL MUL32
 
 	; Retrieve the LM4040 ADC value.
-	MOV y+0, voltage_ref+0
-	MOV y+1, voltage_ref+1
+	MOV y+0, VAL_LM4040+0
+	MOV y+1, VAL_LM4040+1
 	MOV y+2, #0
 	MOV y+3, #0
 	LCALL DIV32
@@ -733,23 +770,57 @@ READ_TEMP:
 	DISPLAY_LOWER_BCD(bcd+3)
 	DISPLAY_BCD(bcd+2)
 
-	; Send to PUTTY.
-	PUSH ACC
-	SEND_BCD(bcd+3)
-	SEND_BCD(bcd+2)
-	MOV A, #'.'
-	LCALL PUTCHAR
-	SEND_BCD(bcd+1)
-	SEND_BCD(bcd+0)
-	MOV A, #'\r'
-	LCALL PUTCHAR
-	MOV A, #'\n'
-	LCALL PUTCHAR
-	POP ACC
-
 	MOV temp_oven+0, bcd+2
 	MOV temp_oven+1, bcd+3
 
+	RET
+
+LOAD_PRESET_1:
+	PUSH ACC 
+	DELAY(#125)
+	JB PB.3, LEAVE_LOAD_1
+	MOV soak_temp, #0x50
+	MOV soak_time, #0x60
+	MOV reflow_temp, #0x25
+	MOV reflow_time, #0x45
+LEAVE_LOAD_1:
+	POP ACC
+	RET
+
+LOAD_PRESET_2:
+	PUSH ACC 
+	DELAY(#125)
+	JB PB.2, LEAVE_LOAD_2
+	MOV soak_temp, #0x40
+	MOV soak_time, #0x70
+	MOV reflow_temp, #0x20
+	MOV reflow_time, #0x50
+LEAVE_LOAD_2:
+	POP ACC
+	RET
+	
+LOAD_PRESET_3:
+	PUSH ACC 
+	DELAY(#125)
+	JB PB.1, LEAVE_LOAD_3
+	MOV soak_temp, #0x60
+	MOV soak_time, #0x55
+	MOV reflow_temp, #0x30
+	MOV reflow_time, #0x40
+LEAVE_LOAD_3:
+	POP ACC
+	RET
+	
+LOAD_PRESET_4:
+	PUSH ACC 
+	DELAY(#125)
+	JB PB.0, LEAVE_LOAD_4
+	MOV soak_temp, #0x55
+	MOV soak_time, #0x65
+	MOV reflow_temp, #0x30
+	MOV reflow_time, #0x55
+LEAVE_LOAD_4:
+	POP ACC
 	RET
 
 ; Check push buttons.
@@ -791,9 +862,7 @@ ADC_TO_PB:
 	POP ACC
 	RET
 
-; Push button handling.
-
-CHANGE_VALUE MAC VALUE, PB
+CHANGE_VALUE MAC VALUE, PB, ROW, COL, RESET_ROW, RESET_COL
 CHANGE_%0:
 	PUSH ACC
 	DELAY(#125)
@@ -807,13 +876,68 @@ CHANGE_%0:
 	ADD A, #0x99
 	DA A
 	MOV %0, A
+
+	; Update LCD Display at specified ROW and COL
+    Set_Cursor(%2, %3)    ; Move cursor to ROW, COL
+    WriteData(#0)         ; Display custom character 0
+
+	Set_Cursor(%2, %5)
+	SEND_CONSTANT_STRING(#str_space)
+
+	Set_Cursor(%4, %3)
+	SEND_CONSTANT_STRING(#str_space)
+
+	Set_Cursor(%4, %5)
+	SEND_CONSTANT_STRING(#str_space)
+
 	POP ACC
 	RET
 ENDMAC
 
-CHANGE_VALUE(REFLOW_TIME, PB.4)
-CHANGE_VALUE(REFLOW_TEMP, PB.5)
-CHANGE_VALUE(SOAK_TIME, PB.6)
-CHANGE_VALUE(SOAK_TEMP, PB.7)
+CHANGE_VALUE(REFLOW_TIME, PB.4, 2, 13, 1, 8)
+CHANGE_VALUE(REFLOW_TEMP, PB.5, 2, 8, 1, 13)
+CHANGE_VALUE(SOAK_TIME, PB.6, 1, 13, 2, 8)
+CHANGE_VALUE(SOAK_TEMP, PB.7, 1, 8, 2, 13)
 
-END
+SAVE_VALUE MAC VALUE, PB, SAVE_VARIABLE
+SAVE_%0:
+	PUSH ACC
+	DELAY(#125)
+	JB %1, LEAVE_SAVE
+	JB P_BUTTON, LEAVE_SAVE
+	MOV A, %2
+	MOV %0, A
+	POP ACC
+
+ENDMAC
+LEAVE_SAVE:
+	RET
+
+SAVE_VALUE(REFLOW_TIME, PB.0, preset_reflow_time)
+SAVE_VALUE(REFLOW_TEMP, PB.1, preset_reflow_temp)
+SAVE_VALUE(SOAK_TIME, PB.2, preset_soak_time)
+SAVE_VALUE(SOAK_TEMP, PB.3, preset_soak_temp)
+
+;LOAD_VALUE MAC VALUE, PB, SAVE_VARIABLE
+;LOAD_%0:
+;	PUSH ACC
+;	DELAY(#125)
+;	JB %1, LEAVE_LOAD
+;	MOV A, %2
+;	MOV %0, A
+;	POP ACC
+
+;ENDMAC
+;
+;	Set_Cursor(1,7)
+;	Display_char(#'b')
+;	Delay(#250)
+
+;LEAVE_LOAD:
+;	RET
+
+;LOAD_VALUE(REFLOW_TIME, PB.0, preset_reflow_time)
+;LOAD_VALUE(REFLOW_TEMP, PB.1, preset_reflow_temp)
+;LOAD_VALUE(SOAK_TIME, PB.2, preset_soak_time)
+;LOAD_VALUE(SOAK_TEMP, PB.3, preset_soak_temp)
+
