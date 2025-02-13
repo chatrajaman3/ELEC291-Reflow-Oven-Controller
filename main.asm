@@ -52,6 +52,10 @@ ORG 0x0000
 ORG 0x002B
 	LJMP TIMER2_ISR
 
+; Timer 3 ISR vector.
+ORG 0x0083
+	LJMP TIMER3_ISR
+
 ; Microcontroller system frequency in Hz.
 CLK EQU 16600000
 ; Baud rate of UART in bit/s.
@@ -60,6 +64,7 @@ BAUD EQU 115200
 TIMER0_RELOAD EQU (0x10000 - (CLK/1000))
 TIMER1_RELOAD EQU (0x100 - (CLK/(16*BAUD)))
 TIMER2_RELOAD EQU (0x10000 - (CLK/1600))
+TIMER3_RELOAD EQU (0x10000 - (CLK/2000))
 
 ; PWM.
 PWM_OUT EQU P1.0
@@ -132,8 +137,7 @@ bcd: DS 5
 BSEG
 
 mf: DBIT 1
-
-process_start: DBIT 1
+spkr_disable: DBIT 1
 
 CSEG
 
@@ -172,16 +176,16 @@ TIMER2_ISR:
 	CLR TF2
 
 	; PWM.
-	INC counter
 	CLR C
+	INC counter
 	MOV A, pwm
 	SUBB A, counter
-	CPL C
 	MOV PWM_OUT, C
+
 	MOV A, counter
+	CJNE A, #100, TIMER2_ISR_L1
 
 	; Executes every second.
-	CJNE A, #100, TIMER2_ISR_L1
 	MOV counter, #0
 	; Increment 1 s counter.
 	MOV A, time+0
@@ -199,6 +203,12 @@ TIMER2_ISR:
 TIMER2_ISR_L1:
 	POP PSW
 	POP ACC
+	RETI
+
+TIMER3_ISR:
+	JB spkr_disable, TIMER3_ISR_L1
+	CPL SPKR_OUT
+TIMER3_ISR_L1:
 	RETI
 
 ; Program entry point.
@@ -252,6 +262,12 @@ START:
 	; Enable timer 2.
 	SETB TR2
 
+	; Timer 3 initialisation.
+	MOV RH3, #HIGH(TIMER3_RELOAD)
+	MOV RL3, #LOW(TIMER3_RELOAD)
+	ORL EIE1, #0b0000_0010
+	MOV T3CON, #0b0000_1000
+
 	; Initialize and start the ADC.
 
 	; Configure AIN4 (P0.5) as input.
@@ -280,6 +296,9 @@ START:
 	MOV FSM1_state, #STATE_IDLE
 	MOV time+0, #0x00
 	MOV time+1, #0x00
+	SETB spkr_disable
+
+	; Speaker output.
 
 	SET_CURSOR(1, 1)
 	SEND_CONSTANT_STRING(#str_soak_params)
@@ -339,10 +358,6 @@ OVEN_ON:
 	WRITECOMMAND(#0x01)
 	DELAY(#5)
 	SEND_CONSTANT_STRING(#str_abort)
-	DELAY(#250)
-	DELAY(#250)
-	DELAY(#250)
-	DELAY(#250)
 	LJMP RESET_TO_IDLE
 
 OVEN_ON_L1:
@@ -353,7 +368,7 @@ OVEN_ON_INTERIM:
 
 IDLE:
 	CJNE A, #STATE_IDLE, OVEN_ON_INTERIM
-	MOV pwm, #100
+	MOV pwm, #0
 
 	; Convert ADC signal to push button bitfield.
 	LCALL ADC_TO_PB
@@ -388,10 +403,13 @@ IDLE:
 
 PREHEAT_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_PREHEAT
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #0
+	MOV pwm, #100
 
 IDLE_L1:
 	DELAY(#100)
@@ -425,7 +443,13 @@ PREHEAT:
 ABORTING:
 	WRITECOMMAND(#0x01)
 	MOV FSM1_state, #STATE_EMERGENCY
-	MOV pwm, #100
+	MOV pwm, #0
+	CLR spkr_disable
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	SETB spkr_disable
 	LJMP MAIN
 
 PREHEAT_L1:
@@ -440,10 +464,13 @@ PREHEAT_L1:
 
 SOAK_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_SOAK
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #80
+	MOV pwm, #20
 
 PREHEAT_L2:
 	LJMP MAIN
@@ -481,10 +508,13 @@ SOAK_L2:
 
 RAMP_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_RAMP
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #0
+	MOV pwm, #100
 
 SOAK_L3:
 	LJMP MAIN
@@ -514,10 +544,13 @@ RAMPUP:
 
 REFLOW_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_REFLOW
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #70
+	MOV pwm, #30
 
 RAMPUP_L1:
 	LJMP MAIN
@@ -555,12 +588,18 @@ REFLOW_L2:
 
 COOLING_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_COOLING
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #100
+	MOV pwm, #0
 
 REFLOW_L3:
+	LJMP MAIN
+
+COOLING_L1:
 	LJMP MAIN
 
 COOLING:
@@ -583,14 +622,27 @@ RESET_TO_IDLE:
 	MOV FSM1_state, #STATE_IDLE
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #100
+	MOV pwm, #0
 	DELAY(#5)
 	SET_CURSOR(1, 1)
 	SEND_CONSTANT_STRING(#str_soak_params)
 	SET_CURSOR(2, 1)
 	SEND_CONSTANT_STRING(#str_reflow_params)
-
-COOLING_L1:
+	CLR spkr_disable
+	DELAY(#200)
+	DELAY(#200)
+	SETB spkr_disable
+	DELAY(#250)
+	CLR spkr_disable
+	DELAY(#200)
+	DELAY(#200)
+	SETB spkr_disable
+	DELAY(#250)
+	CLR spkr_disable
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	SETB spkr_disable
 	LJMP MAIN
 
 ; Subroutine code for reading ADC.
