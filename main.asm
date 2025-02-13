@@ -50,6 +50,10 @@ ORG 0x0000
 ORG 0x002B
 	LJMP TIMER2_ISR
 
+; Timer 3 ISR vector.
+ORG 0x0083
+	LJMP TIMER3_ISR
+
 ; Microcontroller system frequency in Hz.
 CLK EQU 16600000
 ; Baud rate of UART in bit/s.
@@ -58,6 +62,7 @@ BAUD EQU 115200
 TIMER0_RELOAD EQU (0x10000 - (CLK/1000))
 TIMER1_RELOAD EQU (0x100 - (CLK/(16*BAUD)))
 TIMER2_RELOAD EQU (0x10000 - (CLK/1600))
+TIMER3_RELOAD EQU (0x10000 - (CLK/2000))
 
 ; PWM.
 PWM_OUT EQU P1.0
@@ -148,8 +153,7 @@ preset_reflow_time: DS 1
 BSEG
 
 mf: DBIT 1
-
-process_start: DBIT 1
+spkr_disable: DBIT 1
 
 CSEG
 
@@ -173,32 +177,12 @@ str_reflow:
 	DB 'RFLW', 0
 str_cooling:
 	DB 'COOLING DOWN', 0
+str_abort:
+	DB 'Aborting...', 0
 str_space:
 	DB ' ', 0
 
 ; Interrupt service routines.
-
-LCD_4BIT:
-    clr LCD_E   ; Resting state of LCD's enable is zero
-    ; clr LCD_RW  ; Not used, pin tied to GND
-
-    ; After power on, wait for the LCD start up time before initializing
-	Delay(#40)
-
-    ; First make sure the LCD is in 8-bit mode and then change to 4-bit mode
-	WriteCommand(#0x33)
-	WriteCommand(#0x33)
-	WriteCommand(#0x32)
-
-    ; Configure the LCD
-    WriteCommand(#0x28)
-    WriteCommand(#0x0C)
-    WriteCommand(#0x01) ; clears command screen
-
-    ;Wait for clear screen command to finish. Usually takes 1.52ms.
-	Delay(#2)
-
-    RET
 
 TIMER2_ISR:
 	PUSH ACC
@@ -207,16 +191,16 @@ TIMER2_ISR:
 	CLR TF2
 
 	; PWM.
-	INC counter
 	CLR C
+	INC counter
 	MOV A, pwm
 	SUBB A, counter
-	CPL C
 	MOV PWM_OUT, C
+
 	MOV A, counter
+	CJNE A, #100, TIMER2_ISR_L1
 
 	; Executes every second.
-	CJNE A, #100, TIMER2_ISR_L1
 	MOV counter, #0
 	; Increment 1 s counter.
 	MOV A, time+0
@@ -234,6 +218,12 @@ TIMER2_ISR:
 TIMER2_ISR_L1:
 	POP PSW
 	POP ACC
+	RETI
+
+TIMER3_ISR:
+	JB spkr_disable, TIMER3_ISR_L1
+	CPL SPKR_OUT
+TIMER3_ISR_L1:
 	RETI
 
 ; Program entry point.
@@ -294,6 +284,12 @@ START:
 	; Enable timer 2.
 	SETB TR2
 
+	; Timer 3 initialisation.
+	MOV RH3, #HIGH(TIMER3_RELOAD)
+	MOV RL3, #LOW(TIMER3_RELOAD)
+	ORL EIE1, #0b0000_0010
+	MOV T3CON, #0b0000_1000
+
 	; Initialize and start the ADC.
 
 	; Configure AIN4 (P0.5) as input.
@@ -310,7 +306,7 @@ START:
 	; Enable ADC.
 	ORL ADCCON1, #0b0000_0001
 
-	LCALL LCD_4BIT
+	LCALL LCD_INIT
 	WriteCommand(#0x40) ; Entry mode set
 	
 	; Arrow
@@ -327,6 +323,9 @@ START:
 	MOV FSM1_state, #STATE_IDLE
 	MOV time+0, #0x00
 	MOV time+1, #0x00
+	SETB spkr_disable
+
+	; Speaker output.
 
 	SET_CURSOR(1, 1)
 	SEND_CONSTANT_STRING(#str_soak_params)
@@ -363,11 +362,28 @@ OVEN_ON:
 	DISPLAY_BCD(time+0)
 	DELAY(#250)
 	DELAY(#250)
+
+	; Check if oven on/off button is pressed.
+	JB OVEN_BUTTON, OVEN_ON_L1
+	DELAY(#75)
+	JB OVEN_BUTTON, OVEN_ON_L1
+	JNB OVEN_BUTTON, $
+
+	; Abort reflow process.
+	WRITECOMMAND(#0x01)
+	DELAY(#5)
+	SEND_CONSTANT_STRING(#str_abort)
+	LJMP RESET_TO_IDLE
+
+OVEN_ON_L1:
 	LJMP PREHEAT
 
+OVEN_ON_INTERIM:
+	LJMP OVEN_ON
+
 IDLE:
-	CJNE A, #STATE_IDLE, OVEN_ON
-	MOV pwm, #100
+	CJNE A, #STATE_IDLE, OVEN_ON_INTERIM
+	MOV pwm, #0
 
 	; Convert ADC signal to push button bitfield.
 	LCALL ADC_TO_PB
@@ -384,11 +400,9 @@ IDLE:
 
 	; Check preset buttons load if pressed, if shift is pressed then save the value to the preset.
 
-	; If preset button is pressed, jump
-	JNB P_BUTTON, SAVE_PRESET
 	LCALL ADC_TO_PB
 
-	; If P button is not pressed, check if the load buttons are pressed
+	; If P button is not pressed, check if the load buttons are pressed.
 	JB PB.3, PRESET_NEXT1
 	LCALL LOAD_PRESET_1
 PRESET_NEXT1:
@@ -401,20 +415,8 @@ PRESET_NEXT3:
 	JB PB.0, PRESET_NEXT4
 	LCALL LOAD_PRESET_4
 PRESET_NEXT4:
-
 	
 	LJMP DISPLAY_VARIABLES
-
-SAVE_PRESET:
-
-	JB PB.3, $+6
-	LCALL SAVE_SOAK_TEMP
-	JB PB.2, $+6
-	LCALL SAVE_SOAK_TIME
-	JB PB.1, $+6
-	LCALL SAVE_REFLOW_TEMP
-	JB PB.0, $+6
-	LCALL SAVE_REFLOW_TIME
 
 DISPLAY_VARIABLES:
 	; Display variables.
@@ -437,10 +439,13 @@ DISPLAY_VARIABLES:
 
 PREHEAT_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_PREHEAT
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #0
+	MOV pwm, #100
 
 IDLE_L1:
 	DELAY(#100)
@@ -461,23 +466,49 @@ PREHEAT:
 	DISPLAY_BCD(soak_temp)
 	DISPLAY_CHAR(#'C')
 
+	; Check if oven temperature reaches 50 deg C within 60 s.
+	MOV A, time+1
+	JNZ $+4
+	SJMP PREHEAT_L1
+	MOV A, temp_oven+1
+	CJNE A, #0x00, PREHEAT_L1
+	CLR C
+	MOV A, #0x50
+	SUBB A, temp_oven+0
+	JC PREHEAT_L1
+ABORTING:
+	WRITECOMMAND(#0x01)
+	MOV FSM1_state, #STATE_EMERGENCY
+	MOV pwm, #0
+	CLR spkr_disable
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	SETB spkr_disable
+	LJMP MAIN
+
+PREHEAT_L1:
 	; Check if oven temperature is more than threshold.
 	CLR C
 	MOV A, temp_oven+1
 	SUBB A, #0x01
-	JC PREHEAT_L1
+	JC PREHEAT_L2
 	MOV A, temp_oven+0
 	SUBB A, soak_temp
-	JC PREHEAT_L1
+	JC PREHEAT_L2
 
 SOAK_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_SOAK
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #80
+	MOV pwm, #20
 
-PREHEAT_L1:
+PREHEAT_L2:
 	LJMP MAIN
 
 RAMPUP_INTERIM:
@@ -513,10 +544,13 @@ SOAK_L2:
 
 RAMP_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_RAMP
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #0
+	MOV pwm, #100
 
 SOAK_L3:
 	LJMP MAIN
@@ -546,10 +580,13 @@ RAMPUP:
 
 REFLOW_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_REFLOW
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #70
+	MOV pwm, #30
 
 RAMPUP_L1:
 	LJMP MAIN
@@ -587,12 +624,18 @@ REFLOW_L2:
 
 COOLING_TRANSITION:
 	WRITECOMMAND(#0x01)
+	CLR spkr_disable
+	DELAY(#250)
+	SETB spkr_disable
 	MOV FSM1_state, #STATE_COOLING
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #100
+	MOV pwm, #0
 
 REFLOW_L3:
+	LJMP MAIN
+
+COOLING_L1:
 	LJMP MAIN
 
 COOLING:
@@ -610,19 +653,60 @@ COOLING:
 	SUBB A, temp_oven+0
 	JC COOLING_L1
 
-BACK_TO_IDLE:
+RESET_TO_IDLE:
 	WRITECOMMAND(#0x01)
 	MOV FSM1_state, #STATE_IDLE
 	MOV time+0, #0x00
 	MOV time+1, #0x00
-	MOV pwm, #100
+	MOV pwm, #0
 	DELAY(#5)
 	SET_CURSOR(1, 1)
 	SEND_CONSTANT_STRING(#str_soak_params)
 	SET_CURSOR(2, 1)
 	SEND_CONSTANT_STRING(#str_reflow_params)
+	CLR spkr_disable
+	DELAY(#200)
+	DELAY(#200)
+	SETB spkr_disable
+	DELAY(#250)
+	CLR spkr_disable
+	DELAY(#200)
+	DELAY(#200)
+	SETB spkr_disable
+	DELAY(#250)
+	CLR spkr_disable
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	SETB spkr_disable
+	LJMP MAIN
 
-COOLING_L1:
+BACK_TO_IDLE:
+	WRITECOMMAND(#0x01)
+	MOV FSM1_state, #STATE_IDLE
+	MOV time+0, #0x00
+	MOV time+1, #0x00
+	MOV pwm, #0
+	DELAY(#5)
+	SET_CURSOR(1, 1)
+	SEND_CONSTANT_STRING(#str_soak_params)
+	SET_CURSOR(2, 1)
+	SEND_CONSTANT_STRING(#str_reflow_params)
+	CLR spkr_disable
+	DELAY(#200)
+	DELAY(#200)
+	SETB spkr_disable
+	DELAY(#250)
+	CLR spkr_disable
+	DELAY(#200)
+	DELAY(#200)
+	SETB spkr_disable
+	DELAY(#250)
+	CLR spkr_disable
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	SETB spkr_disable
 	LJMP MAIN
 
 ; Subroutine code for reading ADC.
@@ -877,9 +961,9 @@ CHANGE_%0:
 	DA A
 	MOV %0, A
 
-	; Update LCD Display at specified ROW and COL
-    Set_Cursor(%2, %3)    ; Move cursor to ROW, COL
-    WriteData(#0)         ; Display custom character 0
+	; Update LCD Display at specified ROW and COL.
+	Set_Cursor(%2, %3)
+	WriteData(#0)
 
 	Set_Cursor(%2, %5)
 	SEND_CONSTANT_STRING(#str_space)
@@ -898,46 +982,3 @@ CHANGE_VALUE(REFLOW_TIME, PB.4, 2, 13, 1, 8)
 CHANGE_VALUE(REFLOW_TEMP, PB.5, 2, 8, 1, 13)
 CHANGE_VALUE(SOAK_TIME, PB.6, 1, 13, 2, 8)
 CHANGE_VALUE(SOAK_TEMP, PB.7, 1, 8, 2, 13)
-
-SAVE_VALUE MAC VALUE, PB, SAVE_VARIABLE
-SAVE_%0:
-	PUSH ACC
-	DELAY(#125)
-	JB %1, LEAVE_SAVE
-	JB P_BUTTON, LEAVE_SAVE
-	MOV A, %2
-	MOV %0, A
-	POP ACC
-
-ENDMAC
-LEAVE_SAVE:
-	RET
-
-SAVE_VALUE(REFLOW_TIME, PB.0, preset_reflow_time)
-SAVE_VALUE(REFLOW_TEMP, PB.1, preset_reflow_temp)
-SAVE_VALUE(SOAK_TIME, PB.2, preset_soak_time)
-SAVE_VALUE(SOAK_TEMP, PB.3, preset_soak_temp)
-
-;LOAD_VALUE MAC VALUE, PB, SAVE_VARIABLE
-;LOAD_%0:
-;	PUSH ACC
-;	DELAY(#125)
-;	JB %1, LEAVE_LOAD
-;	MOV A, %2
-;	MOV %0, A
-;	POP ACC
-
-;ENDMAC
-;
-;	Set_Cursor(1,7)
-;	Display_char(#'b')
-;	Delay(#250)
-
-;LEAVE_LOAD:
-;	RET
-
-;LOAD_VALUE(REFLOW_TIME, PB.0, preset_reflow_time)
-;LOAD_VALUE(REFLOW_TEMP, PB.1, preset_reflow_temp)
-;LOAD_VALUE(SOAK_TIME, PB.2, preset_soak_time)
-;LOAD_VALUE(SOAK_TEMP, PB.3, preset_soak_temp)
-
