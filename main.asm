@@ -17,23 +17,25 @@
 ;                                        GND -|7    14|- P1.1/PWM1/IC1/AIN7/CLO       [Analog OPAMP input]
 ; [Oven on/off] [SDA]/TXD_1/ICPDA/OCDDA/P1.6 -|8    13|- P1.2/PWM0/IC0                [Speaker output]
 ;                                        VDD -|9    12|- P1.3/SCL/[STADC]
-; [SHIFT button]            PWM5/IC7/SS/P1.5 -|10   11|- P1.4/SDA/FB/PWM1			  [PRESET button]
+; [SHIFT button]            PWM5/IC7/SS/P1.5 -|10   11|- P1.4/SDA/FB/PWM1             [PRESET button]
 ;                                              -------
 
 ; ADC channel mappings.
 ;
+; AIN0	P1.7	Reference voltage
 ; AIN1	P3.0	Ambient temperature
 ; AIN4	P0.5	Push button
+; AIN7	P1.1	Op-amp with thermocouple wire
 
 ; Mappings for push buttons.
 ;
 ; P1.5	SHIFT modifier
 ; P1.6	Start/stop oven
 ;
-; PB.0	PReset Reflow Time
-; PB.1	Preset Reflow Temperature
-; PB.2	Preset Soak Time
-; PB.3	Preset Soak Temperature
+; PB.0	Load preset 4
+; PB.1	Load preset 3
+; PB.2	Load preset 2
+; PB.3	Load preset 1
 ; PB.4	Reflow time
 ; PB.5	Reflow temperature
 ; PB.6	Soak time
@@ -106,60 +108,49 @@ PB: DS 1
 
 DSEG at 0x30
 
-; State machine related variables. Refer to defined macros.
+counter: DS 1
 
+; State machine related variables. Refer to defined macros.
 time: DS 2
 counter_ms: DS 2
 FSM1_state: DS 1
 
 ; Variables for 32-bit integer arithmetic.
-
 x: DS 4
 y: DS 4
 z: DS 4
 
 ; User-controlled variables.
-
 soak_temp: DS 1
 soak_time: DS 1
 reflow_temp: DS 1
 reflow_time: DS 1
 
-; Temperature readings.
-
 ; Reference voltage.
-VAL_LM4040: ds 2
-; Ambient temperature
-VAL_LM335: ds 2
+VAL_LM4040: DS 2
+; Ambient temperature.
+VAL_LM335: DS 2
 
 ; Oven controller variables.
-
 pwm: DS 1
 temp_oven: DS 2
 
 ; BCD numbers for LCD.
-
 bcd: DS 5
 
-counter: DS 1
-
-; Save Presets
-
+; Save presets.
 preset_1_soak_temp: DS 1
 preset_1_soak_time: DS 1
 preset_1_reflow_temp: DS 1
 preset_1_reflow_time: DS 1
-
 preset_2_soak_temp: DS 1
 preset_2_soak_time: DS 1
 preset_2_reflow_temp: DS 1
 preset_2_reflow_time: DS 1
-
 preset_3_soak_temp: DS 1
 preset_3_soak_time: DS 1
 preset_3_reflow_temp: DS 1
 preset_3_reflow_time: DS 1
-
 preset_4_soak_temp: DS 1
 preset_4_soak_time: DS 1
 preset_4_reflow_temp: DS 1
@@ -198,8 +189,6 @@ str_emergency_2:
 	DB 'CHECK THERMOWIRE', 0
 str_abort:
 	DB 'Aborting...', 0
-str_space:
-	DB ' ', 0
 
 ; Interrupt service routines.
 
@@ -309,18 +298,13 @@ START:
 
 	; Timer 2 initialisation.
 	MOV T2CON, #0b0000_0000
-	; Enable auto-reload and use 1/16 clock divider.
 	MOV T2MOD, #0b1010_0000
-	; Enable timer 2 interrupt service routine (address 002BH).
 	ORL EIE, #0b1000_0000
-	; Set reload value to TIMER2_RELOAD.
 	MOV TH2, #HIGH(TIMER2_RELOAD)
 	MOV TL2, #LOW(TIMER2_RELOAD)
-	; Initialise RCMP2 and count values.
 	MOV RCMP2H, #HIGH(TIMER2_RELOAD)
 	MOV RCMP2L, #LOW(TIMER2_RELOAD)
 	MOV counter, #0x00
-	; Enable timer 2.
 	SETB TR2
 
 	; Timer 3 initialisation.
@@ -346,23 +330,24 @@ START:
 	ORL ADCCON1, #0b0000_0001
 
 	LCALL LCD_INIT
-	WriteCommand(#0x40) ; Entry mode set
-	
-	; Arrow
-	WriteData(#00000B)
-	WriteData(#01000B)
-	WriteData(#01100B)
-	WriteData(#00110B)
-	WriteData(#00110B)
-	WriteData(#01100B)
-	WriteData(#01000B)
-	WriteData(#00000B)
+	WRITECOMMAND(#0x40)
+
+	; Arrow.
+	WRITEDATA(#0b00000)
+	WRITEDATA(#0b01000)
+	WRITEDATA(#0b01100)
+	WRITEDATA(#0b00110)
+	WRITEDATA(#0b00110)
+	WRITEDATA(#0b01100)
+	WRITEDATA(#0b01000)
+	WRITEDATA(#0b00000)
 
 	; Initialise state machine.
 	MOV FSM1_state, #STATE_IDLE
 	MOV time+0, #0x00
 	MOV time+1, #0x00
 	SETB spkr_disable
+	SETB P_BUTTON
 
 	; Speaker output.
 
@@ -371,10 +356,8 @@ START:
 	SET_CURSOR(2, 1)
 	SEND_CONSTANT_STRING(#str_reflow_params)
 
-	; Create 1 custom character for the LCD
-	mov A, #0x08 ; maybe 0x08
-
-	SETB P_BUTTON
+	; Create 1 custom character for the LCD.
+	MOV A, #0x08
 
 MAIN:
 
@@ -474,14 +457,14 @@ CHECK_PRESET_BUTTONS:
 PRESET_NEXT1:
 	JB PB.2, PRESET_NEXT2
 	LCALL LOAD_PRESET_2
-PRESET_NEXT2:	
+PRESET_NEXT2:
 	JB PB.1, PRESET_NEXT3
 	LCALL LOAD_PRESET_3
 PRESET_NEXT3:
 	JB PB.0, PRESET_NEXT4
 	LCALL LOAD_PRESET_4
 PRESET_NEXT4:
-	
+
 	LJMP DISPLAY_VARIABLES
 
 PRESET_NEXT8:
@@ -859,7 +842,6 @@ READ_TEMP:
 	; Retrieve the LM4040 ADC value.
 	MOV y+0, VAL_LM4040+0
 	MOV y+1, VAL_LM4040+1
-	; Pad other bits with zero
 	MOV y+2, #0
 	MOV y+3, #0
 	LCALL DIV32
@@ -991,7 +973,7 @@ LEAVE_SAVE_4:
 	RET
 
 LOAD_PRESET_1:
-	PUSH ACC 
+	PUSH ACC
 	DELAY(#125)
 	JB PB.3, LEAVE_LOAD_1
 	MOV soak_temp, preset_1_soak_time
@@ -1003,7 +985,7 @@ LEAVE_LOAD_1:
 	RET
 
 LOAD_PRESET_2:
-	PUSH ACC 
+	PUSH ACC
 	DELAY(#125)
 	JB PB.2, LEAVE_LOAD_2
 	MOV soak_temp, preset_2_soak_time
@@ -1013,9 +995,9 @@ LOAD_PRESET_2:
 LEAVE_LOAD_2:
 	POP ACC
 	RET
-	
+
 LOAD_PRESET_3:
-	PUSH ACC 
+	PUSH ACC
 	DELAY(#125)
 	JB PB.1, LEAVE_LOAD_3
 	MOV soak_temp, preset_3_soak_time
@@ -1025,9 +1007,9 @@ LOAD_PRESET_3:
 LEAVE_LOAD_3:
 	POP ACC
 	RET
-	
+
 LOAD_PRESET_4:
-	PUSH ACC 
+	PUSH ACC
 	DELAY(#125)
 	JB PB.0, LEAVE_LOAD_4
 	MOV soak_temp, preset_4_soak_time
@@ -1093,17 +1075,14 @@ CHANGE_%0:
 	MOV %0, A
 
 	; Update LCD Display at specified ROW and COL.
-	Set_Cursor(%2, %3)
-	WriteData(#0)
-
-	Set_Cursor(%2, %5)
-	SEND_CONSTANT_STRING(#str_space)
-
-	Set_Cursor(%4, %3)
-	SEND_CONSTANT_STRING(#str_space)
-
-	Set_Cursor(%4, %5)
-	SEND_CONSTANT_STRING(#str_space)
+	SET_CURSOR(%2, %3)
+	WRITEDATA(#x000)
+	SET_CURSOR(%2, %5)
+	DISPLAY_CHAR(#' ')
+	SET_CURSOR(%4, %3)
+	DISPLAY_CHAR(#' ')
+	SET_CURSOR(%4, %5)
+	DISPLAY_CHAR(#' ')
 
 	POP ACC
 	RET
