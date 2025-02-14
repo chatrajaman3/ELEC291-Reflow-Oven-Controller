@@ -145,10 +145,25 @@ counter: DS 1
 
 ; Save Presets
 
-preset_soak_temp: DS 1
-preset_soak_time: DS 1
-preset_reflow_temp: DS 1
-preset_reflow_time: DS 1
+preset_1_soak_temp: DS 1
+preset_1_soak_time: DS 1
+preset_1_reflow_temp: DS 1
+preset_1_reflow_time: DS 1
+
+preset_2_soak_temp: DS 1
+preset_2_soak_time: DS 1
+preset_2_reflow_temp: DS 1
+preset_2_reflow_time: DS 1
+
+preset_3_soak_temp: DS 1
+preset_3_soak_time: DS 1
+preset_3_reflow_temp: DS 1
+preset_3_reflow_time: DS 1
+
+preset_4_soak_temp: DS 1
+preset_4_soak_time: DS 1
+preset_4_reflow_temp: DS 1
+preset_4_reflow_time: DS 1
 
 BSEG
 
@@ -177,6 +192,10 @@ str_reflow:
 	DB 'RFLW', 0
 str_cooling:
 	DB 'COOLING DOWN', 0
+str_emergency_1:
+	DB 'EMERGENCY ABORT', 0
+str_emergency_2:
+	DB 'CHECK THERMOWIRE', 0
 str_abort:
 	DB 'Aborting...', 0
 str_space:
@@ -245,9 +264,9 @@ START:
 	; CLK is the input for timer 1.
 	ORL CKCON, #0b0001_0000
 	; Bit SMOD=1, double baud rate.
-	ORL PCON, #0b0000_1000
+	ORL PCON, #0b1000_0000
 	MOV SCON, #0b0101_0010
-	ANL T3CON, #0b110_11111
+	ANL T3CON, #0b1101_1111
 	; Clear the configuration bits for timer 1.
 	ANL TMOD, #0b0000_1111
 	; Timer 1 Mode 2.
@@ -261,6 +280,26 @@ START:
 	MOV soak_time, #0x75
 	MOV reflow_temp, #0x25
 	MOV reflow_time, #0x60
+
+	MOV preset_1_soak_temp, #0x40
+	MOV preset_1_soak_time, #0x70
+	MOV preset_1_reflow_temp, #0x20
+	MOV preset_1_reflow_time, #0x50
+
+	MOV preset_2_soak_temp, #0x50
+	MOV preset_2_soak_time, #0x60
+	MOV preset_2_reflow_temp, #0x25
+	MOV preset_2_reflow_time, #0x45
+
+	MOV preset_3_soak_temp, #0x60
+	MOV preset_3_soak_time, #0x55
+	MOV preset_3_reflow_temp, #0x30
+	MOV preset_3_reflow_time, #0x40
+
+	MOV preset_4_soak_temp, #0x55
+	MOV preset_4_soak_time, #0x65
+	MOV preset_4_reflow_temp, #0x30
+	MOV preset_4_reflow_time, #0x55
 
 	; Using timer 0 for delay functions.
 	CLR TR0
@@ -336,11 +375,6 @@ START:
 	mov A, #0x08 ; maybe 0x08
 
 	SETB P_BUTTON
-	
-	MOV preset_soak_temp, #0x69
-	MOV preset_reflow_temp, #0x69
-	MOV preset_soak_time, #0x69
-	MOV preset_reflow_time, #0x69
 
 MAIN:
 
@@ -349,10 +383,28 @@ MAIN:
 
 ; Begin state machine logic and handling.
 
+EMERGENCY:
+	SET_CURSOR(1, 1)
+	SEND_CONSTANT_STRING(#str_emergency_1)
+	SET_CURSOR(2, 1)
+	SEND_CONSTANT_STRING(#str_emergency_2)
+	; Check if oven on/off button is pressed.
+	JB OVEN_BUTTON, EMERGENCY_L1
+	DELAY(#100)
+	JB OVEN_BUTTON, EMERGENCY_L1
+	JNB OVEN_BUTTON, $
+	LJMP RESET_TO_IDLE
+EMERGENCY_L1:
+	LJMP MAIN
+
 OVEN_ON:
 	; This delay helps mitigate an undesired flash at
 	; the beginning of the state transition.
 	DELAY(#5)
+
+	CJNE A, #STATE_EMERGENCY, $+6
+	LJMP EMERGENCY
+
 	SET_CURSOR(1, 1)
 	SEND_CONSTANT_STRING(#temp)
 	LCALL READ_TEMP
@@ -402,6 +454,20 @@ IDLE:
 
 	LCALL ADC_TO_PB
 
+	JB P_BUTTON, CHECK_PRESET_BUTTONS
+	JB PB.3, PRESET_NEXT5
+	LCALL SAVE_PRESET_1
+PRESET_NEXT5:
+	JB PB.2, PRESET_NEXT6
+	LCALL SAVE_PRESET_2
+PRESET_NEXT6:
+	JB PB.1, PRESET_NEXT7
+	LCALL SAVE_PRESET_3
+PRESET_NEXT7:
+	JB PB.0, PRESET_NEXT8
+	LCALL SAVE_PRESET_4
+
+CHECK_PRESET_BUTTONS:
 	; If P button is not pressed, check if the load buttons are pressed.
 	JB PB.3, PRESET_NEXT1
 	LCALL LOAD_PRESET_1
@@ -418,6 +484,7 @@ PRESET_NEXT4:
 	
 	LJMP DISPLAY_VARIABLES
 
+PRESET_NEXT8:
 DISPLAY_VARIABLES:
 	; Display variables.
 	SET_CURSOR(1, 9)
@@ -480,6 +547,8 @@ ABORTING:
 	WRITECOMMAND(#0x01)
 	MOV FSM1_state, #STATE_EMERGENCY
 	MOV pwm, #0
+	SET_CURSOR(1, 1)
+	SEND_CONSTANT_STRING(#str_abort)
 	CLR spkr_disable
 	DELAY(#250)
 	DELAY(#250)
@@ -854,19 +923,81 @@ READ_TEMP:
 	DISPLAY_LOWER_BCD(bcd+3)
 	DISPLAY_BCD(bcd+2)
 
+	; Send to PUTTY.
+	PUSH ACC
+	SEND_BCD(bcd+3)
+	SEND_BCD(bcd+2)
+	MOV A, #'.'
+	LCALL PUTCHAR
+	SEND_BCD(bcd+1)
+	SEND_BCD(bcd+0)
+	MOV A, #'\r'
+	LCALL PUTCHAR
+	MOV A, #'\n'
+	LCALL PUTCHAR
+	POP ACC
+
 	MOV temp_oven+0, bcd+2
 	MOV temp_oven+1, bcd+3
 
+	RET
+
+SAVE_PRESET_1:
+	PUSH ACC
+	DELAY(#125)
+	JB PB.3, LEAVE_SAVE_1
+	MOV preset_1_soak_temp, soak_time
+	MOV preset_1_soak_time, soak_time
+	MOV preset_1_reflow_temp, reflow_temp
+	MOV preset_1_reflow_time, reflow_time
+LEAVE_SAVE_1:
+	POP ACC
+	RET
+
+SAVE_PRESET_2:
+	PUSH ACC
+	DELAY(#125)
+	JB PB.2, LEAVE_SAVE_2
+	MOV preset_2_soak_temp, soak_time
+	MOV preset_2_soak_time, soak_time
+	MOV preset_2_reflow_temp, reflow_temp
+	MOV preset_2_reflow_time, reflow_time
+LEAVE_SAVE_2:
+	POP ACC
+	RET
+
+SAVE_PRESET_3:
+	PUSH ACC
+	DELAY(#125)
+	JB PB.1, LEAVE_SAVE_3
+	MOV preset_3_soak_temp, soak_time
+	MOV preset_3_soak_time, soak_time
+	MOV preset_3_reflow_temp, reflow_temp
+	MOV preset_3_reflow_time, reflow_time
+LEAVE_SAVE_3:
+	POP ACC
+	RET
+
+SAVE_PRESET_4:
+	PUSH ACC
+	DELAY(#125)
+	JB PB.0, LEAVE_SAVE_4
+	MOV preset_4_soak_temp, soak_time
+	MOV preset_4_soak_time, soak_time
+	MOV preset_4_reflow_temp, reflow_temp
+	MOV preset_4_reflow_time, reflow_time
+LEAVE_SAVE_4:
+	POP ACC
 	RET
 
 LOAD_PRESET_1:
 	PUSH ACC 
 	DELAY(#125)
 	JB PB.3, LEAVE_LOAD_1
-	MOV soak_temp, #0x50
-	MOV soak_time, #0x60
-	MOV reflow_temp, #0x25
-	MOV reflow_time, #0x45
+	MOV soak_temp, preset_1_soak_time
+	MOV soak_time, preset_1_soak_temp
+	MOV reflow_temp, preset_1_reflow_temp
+	MOV reflow_time, preset_1_reflow_time
 LEAVE_LOAD_1:
 	POP ACC
 	RET
@@ -875,10 +1006,10 @@ LOAD_PRESET_2:
 	PUSH ACC 
 	DELAY(#125)
 	JB PB.2, LEAVE_LOAD_2
-	MOV soak_temp, #0x40
-	MOV soak_time, #0x70
-	MOV reflow_temp, #0x20
-	MOV reflow_time, #0x50
+	MOV soak_temp, preset_2_soak_time
+	MOV soak_time, preset_2_soak_temp
+	MOV reflow_temp, preset_2_reflow_temp
+	MOV reflow_time, preset_2_reflow_time
 LEAVE_LOAD_2:
 	POP ACC
 	RET
@@ -887,10 +1018,10 @@ LOAD_PRESET_3:
 	PUSH ACC 
 	DELAY(#125)
 	JB PB.1, LEAVE_LOAD_3
-	MOV soak_temp, #0x60
-	MOV soak_time, #0x55
-	MOV reflow_temp, #0x30
-	MOV reflow_time, #0x40
+	MOV soak_temp, preset_3_soak_time
+	MOV soak_time, preset_3_soak_temp
+	MOV reflow_temp, preset_3_reflow_temp
+	MOV reflow_time, preset_3_reflow_time
 LEAVE_LOAD_3:
 	POP ACC
 	RET
@@ -899,10 +1030,10 @@ LOAD_PRESET_4:
 	PUSH ACC 
 	DELAY(#125)
 	JB PB.0, LEAVE_LOAD_4
-	MOV soak_temp, #0x55
-	MOV soak_time, #0x65
-	MOV reflow_temp, #0x30
-	MOV reflow_time, #0x55
+	MOV soak_temp, preset_4_soak_time
+	MOV soak_time, preset_4_soak_temp
+	MOV reflow_temp, preset_4_reflow_temp
+	MOV reflow_time, preset_4_reflow_time
 LEAVE_LOAD_4:
 	POP ACC
 	RET
