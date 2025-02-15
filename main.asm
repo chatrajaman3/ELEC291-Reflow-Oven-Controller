@@ -17,7 +17,7 @@
 ;                                        GND -|7    14|- P1.1/PWM1/IC1/AIN7/CLO       [Analog OPAMP input]
 ; [Oven on/off] [SDA]/TXD_1/ICPDA/OCDDA/P1.6 -|8    13|- P1.2/PWM0/IC0                [Speaker output]
 ;                                        VDD -|9    12|- P1.3/SCL/[STADC]
-; [SHIFT button]            PWM5/IC7/SS/P1.5 -|10   11|- P1.4/SDA/FB/PWM1             [PRESET button]
+; [SHIFT button]            PWM5/IC7/SS/P1.5 -|10   11|- P1.4/SDA/FB/PWM1
 ;                                              -------
 
 ; ADC channel mappings.
@@ -74,8 +74,6 @@ SPKR_OUT EQU P1.2
 OVEN_BUTTON EQU P1.6
 ; Shift button.
 S_BUTTON EQU P1.5
-; Preset button.
-P_BUTTON EQU P0.4
 
 ; LCD I/O pins.
 LCD_E EQU P1.4
@@ -269,22 +267,18 @@ START:
 	MOV soak_time, #0x75
 	MOV reflow_temp, #0x25
 	MOV reflow_time, #0x60
-
 	MOV preset_1_soak_temp, #0x40
 	MOV preset_1_soak_time, #0x70
 	MOV preset_1_reflow_temp, #0x20
 	MOV preset_1_reflow_time, #0x50
-
 	MOV preset_2_soak_temp, #0x50
 	MOV preset_2_soak_time, #0x60
 	MOV preset_2_reflow_temp, #0x25
 	MOV preset_2_reflow_time, #0x45
-
 	MOV preset_3_soak_temp, #0x60
 	MOV preset_3_soak_time, #0x55
 	MOV preset_3_reflow_temp, #0x30
 	MOV preset_3_reflow_time, #0x40
-
 	MOV preset_4_soak_temp, #0x55
 	MOV preset_4_soak_time, #0x65
 	MOV preset_4_reflow_temp, #0x30
@@ -360,7 +354,6 @@ START:
 	MOV A, #0x08
 
 MAIN:
-
 	MOV A, FSM1_state
 	LJMP IDLE
 
@@ -424,6 +417,8 @@ IDLE:
 	LCALL ADC_TO_PB
 
 	; Go to handler subroutines if button is pressed.
+
+	; Shift button is handled inside the subroutine.
 	JB PB.4, $+6
 	LCALL CHANGE_REFLOW_TIME
 	JB PB.5, $+6
@@ -433,41 +428,30 @@ IDLE:
 	JB PB.7, $+6
 	LCALL CHANGE_SOAK_TEMP
 
-	; Check preset buttons load if pressed, if shift is pressed then save the value to the preset.
+	; Check if SHIFT+PB.{0..3} is pressed.
+	JB S_BUTTON, IDLE_L1
 
-	LCALL ADC_TO_PB
-
-	JB P_BUTTON, CHECK_PRESET_BUTTONS
-	JB PB.3, PRESET_NEXT5
-	LCALL SAVE_PRESET_1
-PRESET_NEXT5:
-	JB PB.2, PRESET_NEXT6
-	LCALL SAVE_PRESET_2
-PRESET_NEXT6:
-	JB PB.1, PRESET_NEXT7
-	LCALL SAVE_PRESET_3
-PRESET_NEXT7:
-	JB PB.0, PRESET_NEXT8
+	JB PB.0, $+6
 	LCALL SAVE_PRESET_4
+	JB PB.1, $+6
+	LCALL SAVE_PRESET_3
+	JB PB.2, $+6
+	LCALL SAVE_PRESET_2
+	JB PB.3, $+6
+	LCALL SAVE_PRESET_1
 
-CHECK_PRESET_BUTTONS:
-	; If P button is not pressed, check if the load buttons are pressed.
-	JB PB.3, PRESET_NEXT1
-	LCALL LOAD_PRESET_1
-PRESET_NEXT1:
-	JB PB.2, PRESET_NEXT2
-	LCALL LOAD_PRESET_2
-PRESET_NEXT2:
-	JB PB.1, PRESET_NEXT3
-	LCALL LOAD_PRESET_3
-PRESET_NEXT3:
-	JB PB.0, PRESET_NEXT4
+IDLE_L1:
+	JB PB.0, $+6
 	LCALL LOAD_PRESET_4
-PRESET_NEXT4:
+	JB PB.1, $+6
+	LCALL LOAD_PRESET_3
+	JB PB.2, $+6
+	LCALL LOAD_PRESET_2
+	JB PB.3, $+6
+	LCALL LOAD_PRESET_1
 
 	LJMP DISPLAY_VARIABLES
 
-PRESET_NEXT8:
 DISPLAY_VARIABLES:
 	; Display variables.
 	SET_CURSOR(1, 9)
@@ -482,9 +466,9 @@ DISPLAY_VARIABLES:
 	DISPLAY_BCD(reflow_time)
 
 	; Check if oven on/off button is pressed.
-	JB OVEN_BUTTON, IDLE_L1
+	JB OVEN_BUTTON, IDLE_L2
 	DELAY(#100)
-	JB OVEN_BUTTON, IDLE_L1
+	JB OVEN_BUTTON, IDLE_L2
 	JNB OVEN_BUTTON, $
 
 PREHEAT_TRANSITION:
@@ -497,7 +481,7 @@ PREHEAT_TRANSITION:
 	MOV time+1, #0x00
 	MOV pwm, #100
 
-IDLE_L1:
+IDLE_L2:
 	DELAY(#100)
 	LJMP MAIN
 
@@ -924,102 +908,6 @@ READ_TEMP:
 
 	RET
 
-SAVE_PRESET_1:
-	PUSH ACC
-	DELAY(#125)
-	JB PB.3, LEAVE_SAVE_1
-	MOV preset_1_soak_temp, soak_time
-	MOV preset_1_soak_time, soak_time
-	MOV preset_1_reflow_temp, reflow_temp
-	MOV preset_1_reflow_time, reflow_time
-LEAVE_SAVE_1:
-	POP ACC
-	RET
-
-SAVE_PRESET_2:
-	PUSH ACC
-	DELAY(#125)
-	JB PB.2, LEAVE_SAVE_2
-	MOV preset_2_soak_temp, soak_time
-	MOV preset_2_soak_time, soak_time
-	MOV preset_2_reflow_temp, reflow_temp
-	MOV preset_2_reflow_time, reflow_time
-LEAVE_SAVE_2:
-	POP ACC
-	RET
-
-SAVE_PRESET_3:
-	PUSH ACC
-	DELAY(#125)
-	JB PB.1, LEAVE_SAVE_3
-	MOV preset_3_soak_temp, soak_time
-	MOV preset_3_soak_time, soak_time
-	MOV preset_3_reflow_temp, reflow_temp
-	MOV preset_3_reflow_time, reflow_time
-LEAVE_SAVE_3:
-	POP ACC
-	RET
-
-SAVE_PRESET_4:
-	PUSH ACC
-	DELAY(#125)
-	JB PB.0, LEAVE_SAVE_4
-	MOV preset_4_soak_temp, soak_time
-	MOV preset_4_soak_time, soak_time
-	MOV preset_4_reflow_temp, reflow_temp
-	MOV preset_4_reflow_time, reflow_time
-LEAVE_SAVE_4:
-	POP ACC
-	RET
-
-LOAD_PRESET_1:
-	PUSH ACC
-	DELAY(#125)
-	JB PB.3, LEAVE_LOAD_1
-	MOV soak_temp, preset_1_soak_time
-	MOV soak_time, preset_1_soak_temp
-	MOV reflow_temp, preset_1_reflow_temp
-	MOV reflow_time, preset_1_reflow_time
-LEAVE_LOAD_1:
-	POP ACC
-	RET
-
-LOAD_PRESET_2:
-	PUSH ACC
-	DELAY(#125)
-	JB PB.2, LEAVE_LOAD_2
-	MOV soak_temp, preset_2_soak_time
-	MOV soak_time, preset_2_soak_temp
-	MOV reflow_temp, preset_2_reflow_temp
-	MOV reflow_time, preset_2_reflow_time
-LEAVE_LOAD_2:
-	POP ACC
-	RET
-
-LOAD_PRESET_3:
-	PUSH ACC
-	DELAY(#125)
-	JB PB.1, LEAVE_LOAD_3
-	MOV soak_temp, preset_3_soak_time
-	MOV soak_time, preset_3_soak_temp
-	MOV reflow_temp, preset_3_reflow_temp
-	MOV reflow_time, preset_3_reflow_time
-LEAVE_LOAD_3:
-	POP ACC
-	RET
-
-LOAD_PRESET_4:
-	PUSH ACC
-	DELAY(#125)
-	JB PB.0, LEAVE_LOAD_4
-	MOV soak_temp, preset_4_soak_time
-	MOV soak_time, preset_4_soak_temp
-	MOV reflow_temp, preset_4_reflow_temp
-	MOV reflow_time, preset_4_reflow_time
-LEAVE_LOAD_4:
-	POP ACC
-	RET
-
 ; Check push buttons.
 
 CHECK_PUSH_BUTTON MAC PB, HEX
@@ -1059,7 +947,9 @@ ADC_TO_PB:
 	POP ACC
 	RET
 
-CHANGE_VALUE MAC VALUE, PB, ROW, COL, RESET_ROW, RESET_COL
+; Push button handling.
+
+CHANGE_VALUE MAC VALUE, PB, ROW, COL
 CHANGE_%0:
 	PUSH ACC
 	DELAY(#125)
@@ -1075,20 +965,62 @@ CHANGE_%0:
 	MOV %0, A
 
 	; Update LCD Display at specified ROW and COL.
+	LCALL CLEAR_ARROWS
 	SET_CURSOR(%2, %3)
-	WRITEDATA(#x000)
-	SET_CURSOR(%2, %5)
-	DISPLAY_CHAR(#' ')
-	SET_CURSOR(%4, %3)
-	DISPLAY_CHAR(#' ')
-	SET_CURSOR(%4, %5)
-	DISPLAY_CHAR(#' ')
+	WRITEDATA(#0x00)
 
 	POP ACC
 	RET
 ENDMAC
 
-CHANGE_VALUE(REFLOW_TIME, PB.4, 2, 13, 1, 8)
-CHANGE_VALUE(REFLOW_TEMP, PB.5, 2, 8, 1, 13)
-CHANGE_VALUE(SOAK_TIME, PB.6, 1, 13, 2, 8)
-CHANGE_VALUE(SOAK_TEMP, PB.7, 1, 8, 2, 13)
+CHANGE_VALUE(REFLOW_TIME, PB.4, 2, 13)
+CHANGE_VALUE(REFLOW_TEMP, PB.5, 2, 8)
+CHANGE_VALUE(SOAK_TIME, PB.6, 1, 13)
+CHANGE_VALUE(SOAK_TEMP, PB.7, 1, 8)
+
+CLEAR_ARROWS:
+	SET_CURSOR(1, 8)
+	DISPLAY_CHAR(#' ')
+	SET_CURSOR(1, 13)
+	DISPLAY_CHAR(#' ')
+	SET_CURSOR(2, 8)
+	DISPLAY_CHAR(#' ')
+	SET_CURSOR(2, 13)
+	DISPLAY_CHAR(#' ')
+	RET
+
+LOAD_PRESET MAC PRESET, PB
+LOAD_PRESET_%0:
+	PUSH ACC
+	DELAY(#125)
+	JB %1, $+15
+	MOV soak_temp, preset_%0_soak_temp
+	MOV soak_time, preset_%0_soak_time
+	MOV reflow_temp, preset_%0_reflow_temp
+	MOV reflow_time, preset_%0_reflow_time
+	POP ACC
+	RET
+ENDMAC
+
+LOAD_PRESET(1, PB.3)
+LOAD_PRESET(2, PB.2)
+LOAD_PRESET(3, PB.1)
+LOAD_PRESET(4, PB.0)
+
+SAVE_PRESET MAC PRESET PB
+SAVE_PRESET_%0:
+	PUSH ACC
+	DELAY(#125)
+	JB %1, $+15
+	MOV preset_%0_soak_temp, soak_temp
+	MOV preset_%0_soak_time, soak_time
+	MOV preset_%0_reflow_temp, reflow_temp
+	MOV preset_%0_reflow_time, reflow_time
+	POP ACC
+	RET
+ENDMAC
+
+SAVE_PRESET(1, PB.3)
+SAVE_PRESET(2, PB.2)
+SAVE_PRESET(3, PB.1)
+SAVE_PRESET(4, PB.0)
