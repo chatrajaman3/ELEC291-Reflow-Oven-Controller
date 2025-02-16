@@ -99,7 +99,7 @@ $include(LCD.inc)
 $include(math32.inc)
 $LIST
 
-DSEG at 0x20
+DSEG at 0x24
 
 ; Bitfield for push button values.
 PB: DS 1
@@ -185,6 +185,10 @@ str_emergency_1:
 	DB 'EMERGENCY ABORT', 0
 str_emergency_2:
 	DB 'CHECK THERMOWIRE', 0
+str_complete:
+	DB 'Reflow complete', 0
+str_resume:
+	DB 'Resuming...', 0
 str_abort:
 	DB 'Aborting...', 0
 
@@ -341,9 +345,6 @@ START:
 	MOV time+0, #0x00
 	MOV time+1, #0x00
 	SETB spkr_disable
-	SETB P_BUTTON
-
-	; Speaker output.
 
 	SET_CURSOR(1, 1)
 	SEND_CONSTANT_STRING(#str_soak_params)
@@ -369,6 +370,11 @@ EMERGENCY:
 	DELAY(#100)
 	JB OVEN_BUTTON, EMERGENCY_L1
 	JNB OVEN_BUTTON, $
+
+	WRITECOMMAND(#0x01)
+	DELAY(#5)
+	SET_CURSOR(1, 1)
+	SEND_CONSTANT_STRING(#str_resume)
 	LJMP RESET_TO_IDLE
 EMERGENCY_L1:
 	LJMP MAIN
@@ -689,32 +695,36 @@ COOLING:
 	SUBB A, temp_oven+0
 	JC COOLING_L1
 
-RESET_TO_IDLE:
 	WRITECOMMAND(#0x01)
+	DELAY(#5)
+	SET_CURSOR(1, 1)
+	SEND_CONSTANT_STRING(#str_complete)
+
+RESET_TO_IDLE:
+	; WRITECOMMAND(#0x01)
 	MOV FSM1_state, #STATE_IDLE
 	MOV time+0, #0x00
 	MOV time+1, #0x00
 	MOV pwm, #0
-	DELAY(#5)
+	CLR spkr_disable
+	DELAY(#200)
+	DELAY(#200)
+	SETB spkr_disable
+	DELAY(#250)
+	CLR spkr_disable
+	DELAY(#200)
+	DELAY(#200)
+	SETB spkr_disable
+	DELAY(#250)
+	CLR spkr_disable
+	DELAY(#250)
+	DELAY(#250)
+	DELAY(#250)
+	SETB spkr_disable
 	SET_CURSOR(1, 1)
 	SEND_CONSTANT_STRING(#str_soak_params)
 	SET_CURSOR(2, 1)
 	SEND_CONSTANT_STRING(#str_reflow_params)
-	CLR spkr_disable
-	DELAY(#200)
-	DELAY(#200)
-	SETB spkr_disable
-	DELAY(#250)
-	CLR spkr_disable
-	DELAY(#200)
-	DELAY(#200)
-	SETB spkr_disable
-	DELAY(#250)
-	CLR spkr_disable
-	DELAY(#250)
-	DELAY(#250)
-	DELAY(#250)
-	SETB spkr_disable
 	LJMP MAIN
 
 BACK_TO_IDLE:
