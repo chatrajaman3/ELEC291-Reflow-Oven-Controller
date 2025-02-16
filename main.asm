@@ -56,6 +56,9 @@ ORG 0x002B
 ORG 0x0083
 	LJMP TIMER3_ISR
 
+; 0b0101_1010.
+SIGNATURE EQU 0x5A
+
 ; Microcontroller system frequency in Hz.
 CLK EQU 16600000
 ; Baud rate of UART in bit/s.
@@ -135,24 +138,6 @@ temp_oven: DS 2
 
 ; BCD numbers for LCD.
 bcd: DS 5
-
-; Save presets.
-preset_1_soak_temp: DS 1
-preset_1_soak_time: DS 1
-preset_1_reflow_temp: DS 1
-preset_1_reflow_time: DS 1
-preset_2_soak_temp: DS 1
-preset_2_soak_time: DS 1
-preset_2_reflow_temp: DS 1
-preset_2_reflow_time: DS 1
-preset_3_soak_temp: DS 1
-preset_3_soak_time: DS 1
-preset_3_reflow_temp: DS 1
-preset_3_reflow_time: DS 1
-preset_4_soak_temp: DS 1
-preset_4_soak_time: DS 1
-preset_4_reflow_temp: DS 1
-preset_4_reflow_time: DS 1
 
 BSEG
 
@@ -267,22 +252,6 @@ START:
 	MOV soak_time, #0x75
 	MOV reflow_temp, #0x25
 	MOV reflow_time, #0x60
-	MOV preset_1_soak_temp, #0x40
-	MOV preset_1_soak_time, #0x70
-	MOV preset_1_reflow_temp, #0x20
-	MOV preset_1_reflow_time, #0x50
-	MOV preset_2_soak_temp, #0x50
-	MOV preset_2_soak_time, #0x60
-	MOV preset_2_reflow_temp, #0x25
-	MOV preset_2_reflow_time, #0x45
-	MOV preset_3_soak_temp, #0x60
-	MOV preset_3_soak_time, #0x55
-	MOV preset_3_reflow_temp, #0x30
-	MOV preset_3_reflow_time, #0x40
-	MOV preset_4_soak_temp, #0x55
-	MOV preset_4_soak_time, #0x65
-	MOV preset_4_reflow_temp, #0x30
-	MOV preset_4_reflow_time, #0x55
 
 	; Using timer 0 for delay functions.
 	CLR TR0
@@ -324,6 +293,19 @@ START:
 	ORL ADCCON1, #0b0000_0001
 
 	LCALL LCD_INIT
+
+	; Check flash memory for the program's signature so we
+	; can initialise the APROM on first boot.
+	PUSH ACC
+	MOV DPTR, #0x47F
+	MOV A, #0x00
+	MOVC A, @A+DPTR
+	CJNE A, #SIGNATURE, $+5
+	SJMP $+5
+	LCALL APROM_INIT
+	; LJMP $+3
+	POP ACC
+
 	WRITECOMMAND(#0x40)
 
 	; Arrow.
@@ -349,8 +331,8 @@ START:
 	SET_CURSOR(2, 1)
 	SEND_CONSTANT_STRING(#str_reflow_params)
 
-	; Create 1 custom character for the LCD.
-	MOV A, #0x08
+	; ; Create 1 custom character for the LCD.
+	; MOV A, #0x08
 
 	; End of initialisation. Output 55AA to serial port.
 	PUSH ACC
@@ -757,6 +739,40 @@ BACK_TO_IDLE:
 	DELAY(#250)
 	SETB spkr_disable
 	LJMP MAIN
+
+; Initialise APROM flash storage with default reflow profiles.
+
+APROM_INIT:
+	PUSH PSW
+
+	; Switch to register bank 1.
+	MOV PSW, #0b0000_1000
+
+	MOV R0, #0x40
+	MOV R1, #0x70
+	MOV R2, #0x20
+	MOV R3, #0x50
+	MOV R4, #0x50
+	MOV R5, #0x60
+	MOV R6, #0x25
+	MOV R7, #0x45
+
+	; Switch to register bank 2.
+	MOV PSW, #0b0001_0000
+
+	MOV R0, #0x60
+	MOV R1, #0x55
+	MOV R2, #0x30
+	MOV R3, #0x40
+	MOV R4, #0x55
+	MOV R5, #0x65
+	MOV R6, #0x30
+	MOV R7, #0x55
+
+	LCALL IAP_WRITE
+
+	POP PSW
+	RET
 
 ; Subroutine code for reading ADC.
 
