@@ -247,12 +247,6 @@ START:
 	MOV TH1, #TIMER1_RELOAD
 	SETB TR1
 
-	; Initialise temperatures/times.
-	MOV soak_temp, #0x50
-	MOV soak_time, #0x75
-	MOV reflow_temp, #0x25
-	MOV reflow_time, #0x60
-
 	; Using timer 0 for delay functions.
 	CLR TR0
 	ORL CKCON, #0b0000_1000
@@ -303,7 +297,6 @@ START:
 	CJNE A, #SIGNATURE, $+5
 	SJMP $+5
 	LCALL APROM_INIT
-	; LJMP $+3
 	POP ACC
 
 	WRITECOMMAND(#0x40)
@@ -324,15 +317,19 @@ START:
 	MOV time+1, #0x00
 	SETB spkr_disable
 
-	; Speaker output.
+	; Initialise temperatures/times.
+	MOV soak_temp, #0x50
+	MOV soak_time, #0x90
+	MOV reflow_temp, #0x25
+	MOV reflow_time, #0x60
 
 	SET_CURSOR(1, 1)
 	SEND_CONSTANT_STRING(#str_soak_params)
 	SET_CURSOR(2, 1)
 	SEND_CONSTANT_STRING(#str_reflow_params)
 
-	; ; Create 1 custom character for the LCD.
-	; MOV A, #0x08
+	; Create 1 custom character for the LCD.
+	MOV A, #0x08
 
 	; End of initialisation. Output 55AA to serial port.
 	PUSH ACC
@@ -748,26 +745,26 @@ APROM_INIT:
 	; Switch to register bank 1.
 	MOV PSW, #0b0000_1000
 
-	MOV R0, #0x40
-	MOV R1, #0x70
-	MOV R2, #0x20
-	MOV R3, #0x50
-	MOV R4, #0x50
+	MOV R0, #0x50
+	MOV R1, #0x90
+	MOV R2, #0x25
+	MOV R3, #0x60
+	MOV R4, #0x80
 	MOV R5, #0x60
-	MOV R6, #0x25
+	MOV R6, #0x30
 	MOV R7, #0x45
 
 	; Switch to register bank 2.
 	MOV PSW, #0b0001_0000
 
-	MOV R0, #0x60
-	MOV R1, #0x55
-	MOV R2, #0x30
-	MOV R3, #0x40
-	MOV R4, #0x55
-	MOV R5, #0x65
-	MOV R6, #0x30
-	MOV R7, #0x55
+	MOV R0, #0x40
+	MOV R1, #0x90
+	MOV R2, #0x10
+	MOV R3, #0x45
+	MOV R4, #0x90
+	MOV R5, #0x30
+	MOV R6, #0x60
+	MOV R7, #0x20
 
 	LCALL IAP_WRITE
 
