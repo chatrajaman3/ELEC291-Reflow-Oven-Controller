@@ -86,7 +86,7 @@ IAP_WRITE:
 	; Disable IAP function.
 	MOV TA, #0xAA
 	MOV TA, #0x55
-	ORL CHPCON, #0b1111_1110
+	ANL CHPCON, #0b1111_1110
 
 	; Reenable global interrupts.
 	SETB EA
