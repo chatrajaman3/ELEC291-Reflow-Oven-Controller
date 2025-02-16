@@ -341,7 +341,6 @@ START:
 	MOV time+0, #0x00
 	MOV time+1, #0x00
 	SETB spkr_disable
-	SETB P_BUTTON
 
 	; Speaker output.
 
@@ -352,6 +351,20 @@ START:
 
 	; Create 1 custom character for the LCD.
 	MOV A, #0x08
+
+	; End of initialisation. Output 55AA to serial port.
+	PUSH ACC
+	MOV A, #'5'
+	LCALL PUTCHAR
+	LCALL PUTCHAR
+	MOV A, #'A'
+	LCALL PUTCHAR
+	LCALL PUTCHAR
+	MOV A, #'\r'
+	LCALL PUTCHAR
+	MOV A, #'\n'
+	LCALL PUTCHAR
+	POP ACC
 
 MAIN:
 	MOV A, FSM1_state
@@ -993,11 +1006,9 @@ LOAD_PRESET MAC PRESET, PB
 LOAD_PRESET_%0:
 	PUSH ACC
 	DELAY(#125)
-	JB %1, $+15
-	MOV soak_temp, preset_%0_soak_temp
-	MOV soak_time, preset_%0_soak_time
-	MOV reflow_temp, preset_%0_reflow_temp
-	MOV reflow_time, preset_%0_reflow_time
+	JB %1, ?NEXT_%0
+	LCALL FETCH_PRESET_%0
+?NEXT_%0:
 	POP ACC
 	RET
 ENDMAC
@@ -1007,20 +1018,66 @@ LOAD_PRESET(2, PB.2)
 LOAD_PRESET(3, PB.1)
 LOAD_PRESET(4, PB.0)
 
-SAVE_PRESET MAC PRESET PB
-SAVE_PRESET_%0:
+FETCH_PRESET MAC PRESET, ADDR, REGBANK
+FETCH_PRESET_%0:
 	PUSH ACC
-	DELAY(#125)
-	JB %1, $+15
-	MOV preset_%0_soak_temp, soak_temp
-	MOV preset_%0_soak_time, soak_time
-	MOV preset_%0_reflow_temp, reflow_temp
-	MOV preset_%0_reflow_time, reflow_time
+	PUSH PSW
+
+	MOV DPTR, %1
+
+	ANL PSW, #0b1110_0111
+	ORL PSW, #(%2 << 3)
+
+	MOV A, #0x00
+	MOVC A, @A+DPTR
+	MOV soak_temp, A
+
+	MOV A, #0x01
+	MOVC A, @A+DPTR
+	MOV soak_time, A
+
+	MOV A, #0x02
+	MOVC A, @A+DPTR
+	MOV reflow_temp, A
+
+	MOV A, #0x03
+	MOVC A, @A+DPTR
+	MOV reflow_time, A
+
+	POP PSW
 	POP ACC
 	RET
 ENDMAC
 
-SAVE_PRESET(1, PB.3)
-SAVE_PRESET(2, PB.2)
-SAVE_PRESET(3, PB.1)
-SAVE_PRESET(4, PB.0)
+FETCH_PRESET(1, #0x400, 0b01)
+FETCH_PRESET(2, #0x404, 0b01)
+FETCH_PRESET(3, #0x408, 0b10)
+FETCH_PRESET(4, #0x40C, 0b10)
+
+SAVE_PRESET MAC PRESET, PB, REGBANK, RA, RB, RC, RD
+SAVE_PRESET_%0:
+	PUSH ACC
+	PUSH PSW
+	DELAY(#125)
+	JB %1, ?SAVE_PRESET_%0
+	LCALL IAP_READ
+
+	ANL PSW, #0b1110_0111
+	ORL PSW, #(%2 << 3)
+
+	MOV %3, soak_temp
+	MOV %4, soak_time
+	MOV %5, reflow_temp
+	MOV %6, reflow_time
+
+	LCALL IAP_WRITE
+?SAVE_PRESET_%0:
+	POP PSW
+	POP ACC
+	RET
+ENDMAC
+
+SAVE_PRESET(1, PB.3, 0b01, R0, R1, R2, R3)
+SAVE_PRESET(2, PB.2, 0b01, R4, R5, R6, R7)
+SAVE_PRESET(3, PB.1, 0b10, R0, R1, R2, R3)
+SAVE_PRESET(4, PB.0, 0b10, R4, R5, R6, R7)
